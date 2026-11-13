@@ -2,7 +2,7 @@ name: Refresh public market data
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '23 * * * *'
   push:
     paths:
       - 'index.html'
@@ -62,4 +62,5 @@ jobs:
           retention-days: 1
       - uses: actions/deploy-pages@v4
         id: deployment
+
 
