@@ -30,7 +30,7 @@ export async function buildSite(){
  const snapshot=buildSnapshot(items,manifest);let html=await readFile('index.html','utf8');
  const bootstrap={version:1,initial:{range:'1D',coins:COIN_IDS,view:'performance'},ranges:{'1D':snapshot.ranges['1D']}};
  html=html.replace(/(<script id="wtct-bootstrap" type="application\/json">)[\s\S]*?(<\/script>)/,(_,a,b)=>a+JSON.stringify(bootstrap).replace(/</g,'\\u003c')+b);
- const scripts=[...html.matchAll(/<script(?:\\s[^>]*)?>([\\s\\S]*?)<\\/script>/g)].filter(m=>!m[0].includes('application/json'));
+ const scripts=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].filter(m=>!m[0].includes('application/json'));
  const hashes=scripts.map(m=>'&#x27;sha256-'+createHash('sha256').update(m[1]).digest('base64')+'&#x27;').join(' ');
  html=html.replace(/script-src [^;]+;/,'script-src '+hashes+';');
  await mkdir('_site/data',{recursive:true});await writeFile('_site/index.html',html);await cp('data','_site/data',{recursive:true});await writeFile('_site/data/ranges.json',JSON.stringify(snapshot));
