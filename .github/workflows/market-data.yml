@@ -9,6 +9,8 @@ on:
       - '.github/workflows/market-data.yml'
 permissions:
   contents: write
+  pages: write
+  id-token: write
 concurrency:
   group: public-market-data
   cancel-in-progress: false
@@ -16,6 +18,9 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,3 +36,13 @@ jobs:
             git commit -m 'Refresh verified public market history'
             git push
           fi
+      - name: Prepare static site
+        run: |
+          mkdir _site
+          cp index.html _site/
+          cp -r data _site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - uses: actions/deploy-pages@v4
+        id: deployment
