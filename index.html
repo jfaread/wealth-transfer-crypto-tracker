@@ -236,7 +236,7 @@ async function repairChartHistory(bundle,wanted,signal){
  if(age<=7200000)return bundle;
  setStatus('loading','Updating chart history…');
  const end=Date.now(),step=bundle.spec.step,window=rangeSpec(bundle.spec.range,end);
- const spec={...bundle.spec,...window,step,interval:bundle.spec.interval,start:Math.floor(window.start/step)*step,source:'CoinGecko',saved:false};
+ const spec={...bundle.spec,...window,step,interval:bundle.spec.interval,start:Math.floor(window.start/step)*step,source:bundle.spec.source,saved:false};
  // Keep existing verified history unless every selected series passes validation.
  const results=await Promise.all(wanted.map(id=>fetchAggregate(id,spec,signal,true)));
  const now=Date.now(),next={spec:{...spec,historySavedAt:now},data:results.map(d=>[d.id,d]),savedAt:now};
