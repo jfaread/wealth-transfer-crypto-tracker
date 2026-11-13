@@ -41,9 +41,9 @@ Return that **public address** to the maintainer. Passwords, private keys and AP
 
 The maintainer can then inspect the public `/v1/config` response and complete these repository-controlled steps through the existing GitHub connection:
 
-1. Verify the dedicated address, expected website origin, public push key, free-plan choice and inactive state.
+1. Verify the dedicated address, expected website origin, free-plan choice and inactive state. Inactive configuration intentionally returns no public push key.
 2. Change `ALERTS_ENABLED` in `alerts/wrangler.jsonc` to `"true"`. The connected production build deploys that reviewed change while preserving existing secrets.
-3. Verify fresh source timestamps and the five supported feed subscriptions from the running service. Keep unsupported or stale sources unavailable.
+3. Verify the public push key, fresh source timestamps and the five supported feed subscriptions from the running service. Keep unsupported or stale sources unavailable.
 4. Put the verified backend origin in `alerts-config.json`, rebuild the website's content security policy and publish through the existing GitHub Pages workflow.
 5. Test on an opted-in phone with the website open, with it closed and with the phone locked. Provider acceptance alone is not proof of display on the phone.
 
