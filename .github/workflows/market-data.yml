@@ -41,9 +41,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '26.13.1'
-      - run: node scripts/refresh-market-data.mjs
-        env:
-          REUSE_MARKET_DATA: ${{ github.event_name == 'push' && 'true' || 'false' }}
+      # Code releases reuse the validated, genuinely dated committed history.
+      # Historical-provider retries must not hold up a website-only update.
+      - name: Refresh historical market data
+        if: github.event_name != 'push'
+        run: node scripts/refresh-market-data.mjs
       - name: Verify and cache current quotes
         run: node scripts/refresh-quotes.mjs
       - name: Commit verified public prices

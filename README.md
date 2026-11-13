@@ -30,3 +30,5 @@ npm run test:alerts-browser
 Browser checks use installed Chrome or Chromium. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` can select an installed browser. Runtime tests use the actual Worker bundle with outbound traffic fully mocked; they do not send real notifications.
 
 The current public market-data workflow has a `23 * * * *` schedule. The schedule's presence does **not** establish that hourly executions are taking place; that remains unverified. Manual price refresh operates independently of the alert service and the historical-data build.
+
+Code-push releases reuse the genuine committed historical snapshot and keep its original dates. Scheduled and manually dispatched builds attempt new history. Every publication still checks the separate current-quote cache and validates the snapshot before deploying; historical-provider retries do not delay a website-only release.
