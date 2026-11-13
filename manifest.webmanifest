@@ -1,0 +1,17 @@
+{
+  "id": "./",
+  "name": "Crypto-Watch",
+  "short_name": "Crypto-Watch",
+  "description": "Compare eight cryptocurrencies and manage optional price alerts.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#120e24",
+  "theme_color": "#24152f",
+  "lang": "en-GB",
+  "icons": [
+    { "src": "icons/cw-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/cw-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/cw.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

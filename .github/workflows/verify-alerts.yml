@@ -1,0 +1,60 @@
+name: Verify phone alert pilot
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'alerts/**'
+      - 'assets/**'
+      - 'icons/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'index.html'
+      - 'manifest.webmanifest'
+      - 'sw.js'
+      - 'alerts-config.json'
+      - 'package*.json'
+      - '.github/workflows/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: verify-alerts-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.13.1'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run check:worker
+      - run: npm test
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.13.1'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      # Reuse genuine committed market observations for visual checks. An older
+      # branch must be refreshed before merge; tests must never invent prices.
+      - run: npm run build
+      - run: npm run test:charts
+      - run: npm run test:alerts-browser
+      - name: Keep responsive layout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crypto-watch-layout-checks
+          path: qa/*.png
+          if-no-files-found: ignore
+          retention-days: 7

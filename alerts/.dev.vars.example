@@ -1,0 +1,6 @@
+# For local development only. Copy to alerts/.dev.vars, which is ignored by Git.
+# Generate a dedicated Web Push key pair; never commit real secret values.
+# In production use Wrangler's interactive secret put command for each value.
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+VAPID_SUBJECT=https://jfaread.github.io/wealth-transfer-crypto-tracker/

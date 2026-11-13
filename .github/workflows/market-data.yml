@@ -4,8 +4,16 @@ on:
   schedule:
     - cron: '23 * * * *'
   push:
+    branches: [main]
     paths:
       - 'index.html'
+      - 'assets/**'
+      - 'icons/**'
+      - 'manifest.webmanifest'
+      - 'sw.js'
+      - 'alerts-config.json'
+      - 'package.json'
+      - 'package-lock.json'
       - 'scripts/refresh-quotes.mjs'
       - 'scripts/test-fast-load.cjs'
       - 'scripts/build-site.mjs'
@@ -32,7 +40,7 @@ jobs:
           ref: main
       - uses: actions/setup-node@v4
         with:
-          node-version: '26'
+          node-version: '26.13.1'
       - run: node scripts/refresh-market-data.mjs
         env:
           REUSE_MARKET_DATA: ${{ github.event_name == 'push' && 'true' || 'false' }}
@@ -55,7 +63,7 @@ jobs:
         timeout-minutes: 2
         if: github.event_name == 'push'
         run: |
-          npm install --no-save --ignore-scripts playwright
+          npm ci --ignore-scripts
           node scripts/test-fast-load.cjs
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -63,5 +71,3 @@ jobs:
           retention-days: 1
       - uses: actions/deploy-pages@v4
         id: deployment
-
-
