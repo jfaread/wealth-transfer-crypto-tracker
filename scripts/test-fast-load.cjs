@@ -19,6 +19,9 @@ const assert=require('node:assert/strict');
   await page.getByRole('button',{name:/^Price ·/}).click();await page.getByRole('button',{name:'Toggle Kishu Inu',exact:true}).click();assert.equal(await page.locator('[data-series="KISHU"]').count(),1);assert.equal(providerCalls,0);
   await page.getByRole('button',{name:'Performance %',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),7);assert.equal(await page.locator('[data-series="CREPE"]').count(),0);
   await page.getByRole('button',{name:'Show only Kishu Inu',exact:true}).click();await page.getByRole('button',{name:/^Price ·/}).click();assert.equal(await page.locator('[data-series]').count(),1);assert.equal(providerCalls,0);
+  const numericText=(await page.locator('#metrics').innerText())+' '+(await page.locator('#hover-values').innerText())+' '+(await page.locator('#chart text').allTextContents()).join(' ');
+  assert(!/\d(?:\.\d+)?e[+-]\d+/i.test(numericText),'Scientific notation remains visible');assert(numericText.includes('0.000000'),'Tiny KISHU price must show a decimal');
+  const axisFits=await page.locator('#chart').evaluate(svg=>[...svg.querySelectorAll('text')].every(t=>t.getBBox().x>=0&&t.getBBox().x+t.getBBox().width<=svg.viewBox.baseVal.width+1));assert(axisFits,'Decimal axis labels overflow the chart');
   await page.getByRole('button',{name:'Compare all eight',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),8);assert(snapshotCalls<=1);
   await page.getByRole('button',{name:'Five years',exact:true}).click();await page.getByText('This period could not be loaded',{exact:true}).waitFor();assert.equal(providerCalls,0);
   await page.getByRole('button',{name:'One day',exact:true}).click();await page.getByRole('button',{name:'Toggle CREPE',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),7);assert(snapshotCalls<=1);
@@ -29,4 +32,5 @@ const assert=require('node:assert/strict');
  const page=await browser.newPage();await page.route('**/*',async route=>{if(route.request().url()==='https://tracker.test/'){await route.fulfill({contentType:'text/html',body:html});return;}await route.abort();});await page.goto('https://tracker.test/');assert.equal(await page.locator('[data-series]').count(),8);await page.close();
  await browser.close();console.log('PASS: immediate offline chart, single snapshot request, all periods, rapid selections, Price-button switching and comparison restoration, tiny prices, mobile widths and isolated Jon George panel.');
 })().catch(e=>{console.error(e);process.exitCode=1;});
+
 
