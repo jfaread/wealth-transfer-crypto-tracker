@@ -47,15 +47,31 @@ export function reconnectDelay(attempt) {
 }
 
 /** Cloudflare's documented outbound WebSocket handshake; injectable for local tests. */
-export async function connectKraken({fetchImpl = globalThis.fetch, onMessage, onClose, onOpen} = {}) {
-  const response = await fetchImpl(KRAKEN_WS_URL, {headers: {Upgrade: 'websocket'}});
-  const socket = response.webSocket;
-  if (response.status !== 101 || !socket) throw new Error('The live price connection is unavailable.');
-  socket.accept();
-  socket.addEventListener('message', event => onMessage?.(event.data));
-  socket.addEventListener('close', () => onClose?.());
-  socket.addEventListener('error', () => onClose?.());
-  socket.send(JSON.stringify(krakenSubscription()));
-  onOpen?.();
-  return socket;
+export async function connectKraken({fetchImpl = globalThis.fetch, onMessage, onClose, onOpen, timeoutMs = 10_000} = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1, Math.min(10_000, timeoutMs)));
+  let response;
+  try {
+    response = await fetchImpl(KRAKEN_WS_URL, {
+      headers: {Upgrade: 'websocket'}, signal: controller.signal, redirect: 'manual',
+    });
+    const socket = response.webSocket;
+    if (response.status !== 101 || !socket) {
+      // A failed upgrade is still an HTTP response. Release its body before
+      // reconnecting so it cannot retain a connection or block other requests.
+      try { await response.body?.cancel(); } catch {}
+      controller.abort();
+      throw new Error('The live price connection is unavailable.');
+    }
+    socket.accept();
+    socket.addEventListener('message', event => onMessage?.(event.data));
+    socket.addEventListener('close', () => onClose?.());
+    socket.addEventListener('error', () => onClose?.());
+    socket.send(JSON.stringify(krakenSubscription()));
+    onOpen?.();
+    return socket;
+  } catch {
+    controller.abort();
+    throw new Error('The live price connection is unavailable.');
+  } finally { clearTimeout(timeout); }
 }

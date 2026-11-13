@@ -41,6 +41,7 @@ test('outbound handshake cannot be redirected to a client-chosen URL', async () 
   const socket = {accept() { accepted++; }, addEventListener(name, fn) { handlers[name] = fn; }, send(value) { sent.push(JSON.parse(value)); }};
   const result = await connectKraken({fetchImpl: async (url, options) => {
     assert.equal(url, KRAKEN_WS_URL); assert.equal(options.headers.Upgrade, 'websocket');
+    assert.equal(options.redirect, 'manual'); assert(options.signal instanceof AbortSignal);
     return {status: 101, webSocket: socket};
   }, onOpen: () => opened++, onMessage: () => messages++, onClose: () => closed++});
   assert.equal(result, socket); assert.equal(accepted, 1); assert.equal(opened, 1);
@@ -48,4 +49,22 @@ test('outbound handshake cannot be redirected to a client-chosen URL', async () 
   handlers.message({data: '{}'}); handlers.close();
   assert.equal(messages, 1); assert.equal(closed, 1);
   await assert.rejects(connectKraken({fetchImpl: async () => ({status: 200})}), /unavailable/);
+});
+
+test('failed handshake cancels its response and aborts before a later reconnect', async () => {
+  let cancelled = false, signal;
+  await assert.rejects(connectKraken({fetchImpl: async (_url, options) => {
+    signal = options.signal;
+    return {status: 503, body: {async cancel() { cancelled = true; }}};
+  }}), /unavailable/);
+  assert.equal(cancelled, true); assert.equal(signal.aborted, true);
+});
+
+test('a stalled handshake times out without retaining a connection indefinitely', async () => {
+  let signal;
+  await assert.rejects(connectKraken({timeoutMs: 10, fetchImpl: (_url, options) => {
+    signal = options.signal;
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('Synthetic abort'))));
+  }}), /unavailable/);
+  assert.equal(signal.aborted, true);
 });

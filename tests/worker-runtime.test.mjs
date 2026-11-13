@@ -14,8 +14,9 @@ const skip = existsSync(bundle) ? false : 'Build the Worker with npm run check:w
 const siteUrl = 'https://jfaread.github.io/wealth-transfer-crypto-tracker/';
 const siteOrigin = 'https://jfaread.github.io';
 
-function makeRuntime(bindings, outboundService) {
+function makeRuntime(bindings, outboundService, extraWorkers = []) {
   return new Miniflare(convertV4MiniflareOptions({
+    workers: [{
     name: 'crypto-watch-runtime',
     // Load exactly Wrangler's deployment artifact. Automatic source discovery
     // incorrectly attempts to resolve an unused, optional dynamic Kerberos
@@ -25,7 +26,6 @@ function makeRuntime(bindings, outboundService) {
     compatibilityDate: '2026-11-13',
     compatibilityFlags: ['nodejs_compat'],
     durableObjects: { ALERT_MONITOR: { className: 'CryptoAlertMonitor', useSQLite: true } },
-    durableObjectsPersist: false,
     bindings: {
       ALERTS_ENABLED: 'false',
       ALLOWED_ORIGIN: siteOrigin,
@@ -34,8 +34,42 @@ function makeRuntime(bindings, outboundService) {
       ...bindings,
     },
     outboundService,
+    }, ...extraWorkers],
+    durableObjectsPersist: false,
     log: new Log(LogLevel.ERROR),
   }));
+}
+
+function networkMockWorker(endpointPath) {
+  // Keep WebSocket-handshake mocks inside Workerd. Miniflare 5's Node function
+  // bridge can stall later requests after a mocked failed Upgrade handshake.
+  // This worker never calls fetch, so no public network request is possible.
+  return {
+    name: 'closed-network-mock',
+    modules: [{ type: 'ESModule', path: resolve('tests/closed-network-mock.mjs'), contents: `
+      let pushCount = 0, feedCount = 0, blockedCount = 0, capturedPush = null;
+      export default { async fetch(request) {
+        const url = new URL(request.url);
+        if (request.method === 'GET' && url.href === 'https://runtime-capture.invalid/state') {
+          return Response.json({pushCount,feedCount,blockedCount,capturedPush});
+        }
+        if (request.method === 'GET' && url.href === 'https://ws.kraken.com/v2') {
+          feedCount++;
+          return new Response(null, {status:503});
+        }
+        if (request.method === 'POST' && url.href === ${JSON.stringify(`https://fcm.googleapis.com${endpointPath}`)} && pushCount === 0) {
+          pushCount++;
+          capturedPush = {headers:Array.from(request.headers),body:Array.from(new Uint8Array(await request.arrayBuffer()))};
+          return new Response(null, {status:201});
+        }
+        blockedCount++;
+        return new Response('Unexpected outbound request blocked by the runtime test.', {status:502});
+      }};
+    ` }],
+    modulesRoot: resolve('tests'),
+    compatibilityDate: '2026-11-13',
+    outboundService: async () => { throw new Error('The closed mock cannot access a network.'); },
+  };
 }
 
 async function call(mf, path, { method = 'GET', token, body } = {}) {
@@ -103,33 +137,12 @@ test('Workerd: actual Durable Object registers, saves drafts, encrypts a mocked 
   const authSecret = randomBytes(16);
   const vapid = generateVAPIDKeys();
   const endpointPath = '/fcm/send/crypto-watch-local-runtime-test-only';
-  let capturedPush;
-  let pushCount = 0;
-  let feedCount = 0;
-  let blockedCount = 0;
-  // Miniflare 5 replaced createFetchMock with its outboundService hook. This
-  // closed handler never calls fetch: every destination is either mocked or
-  // rejected, including unexpected retries to the synthetic push endpoint.
-  const outbound = async request => {
-    const url = new URL(request.url);
-    if (request.method === 'GET' && url.href === 'https://ws.kraken.com/v2') {
-      feedCount++;
-      return new Response(null, { status: 503 });
-    }
-    if (request.method === 'POST' && url.href === `https://fcm.googleapis.com${endpointPath}` && pushCount === 0) {
-      pushCount++;
-      capturedPush = { headers: new Headers(request.headers), body: Buffer.from(await request.arrayBuffer()) };
-      return new Response(null, { status: 201 });
-    }
-    blockedCount++;
-    throw new Error('Unexpected outbound request blocked by the runtime test.');
-  };
   const mf = makeRuntime({
     ALERTS_ENABLED: 'true',
     VAPID_PUBLIC_KEY: vapid.publicKey,
     VAPID_PRIVATE_KEY: vapid.privateKey,
     VAPID_SUBJECT: siteUrl,
-  }, outbound);
+  }, 'closed-network-mock', [networkMockWorker(endpointPath)]);
 
   try {
     const configResponse = await call(mf, '/v1/config');
@@ -178,8 +191,12 @@ test('Workerd: actual Durable Object registers, saves drafts, encrypts a mocked 
       if (event?.status === 'accepted' || event?.status === 'failed') break;
       await new Promise(resolveWait => setTimeout(resolveWait, 25));
     }
+    const mockWorker = await mf.getWorker('closed-network-mock');
+    const stats = await (await mockWorker.fetch('https://runtime-capture.invalid/state')).json();
+    const {pushCount, feedCount, blockedCount} = stats;
     assert.equal(event?.status, 'accepted', `the real Workerd encryption and mocked provider request must succeed (mocked pushes: ${pushCount}, feed requests: ${feedCount}, rejected requests: ${blockedCount})`);
     assert.equal(pushCount, 1);
+    const capturedPush = {headers: new Headers(stats.capturedPush.headers), body: Buffer.from(stats.capturedPush.body)};
     assert.equal(capturedPush.headers.get('Content-Encoding'), 'aes128gcm');
     assert.equal(capturedPush.headers.get('Urgency'), 'high');
     assert.ok(Number(capturedPush.headers.get('TTL')) <= 120);

@@ -160,7 +160,7 @@ const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.jso
   await page.locator('#wtct-alerts-open').click();await page.waitForFunction(()=>document.getElementById('wtct-alerts-dialog').getAttribute('aria-busy')==='false');
   await page.locator('#wa-disconnect').click();await page.waitForFunction(()=>document.getElementById('wtct-alerts-dialog').getAttribute('aria-busy')==='false');
   assert(registered);assert.equal(await page.evaluate(key=>JSON.parse(localStorage.getItem(key)).auth.token,KEY),TOKEN);assert.equal(await page.evaluate(()=>window.__alertProbe.unsubscribes),0);
-  await page.locator('#wa-disconnect').click();await page.getByText(/disconnected from the monitor and its browser subscription was removed/).waitFor();
+  await page.locator('#wa-disconnect').click();await page.locator('#wa-message').filter({hasText:/The server alert registration has been stopped/}).waitFor();
   assert(!registered);assert.equal(await page.evaluate(key=>JSON.parse(localStorage.getItem(key)).auth,KEY),null);assert.equal(await page.evaluate(()=>window.__alertProbe.unsubscribes),1);
   assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),1);
   assert(records.some(x=>x.path==='/v1/rules'&&x.method==='PUT'));
