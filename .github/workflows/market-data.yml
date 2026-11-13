@@ -5,6 +5,7 @@ on:
     - cron: '17 * * * *'
   push:
     paths:
+      - 'index.html'
       - 'scripts/refresh-market-data.mjs'
       - '.github/workflows/market-data.yml'
 permissions:
@@ -37,6 +38,7 @@ jobs:
           git add data
           if ! git diff --cached --quiet; then
             git commit -m 'Refresh verified public market history'
+            git pull --rebase origin main
             git push
           fi
       - name: Prepare static site
