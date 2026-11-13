@@ -11,6 +11,13 @@ const assert=require('node:assert/strict');
   assert.equal(await page.locator('[data-series]').count(),8);assert.equal(providerCalls,0);
   const layout=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));assert(layout.scroll<=layout.width,JSON.stringify({width,...layout}));
   await page.getByRole('button',{name:'One month',exact:true}).click();await page.locator('[data-series="CREPE"]').waitFor({timeout:1500});assert.equal(await page.locator('[data-series]').count(),8);assert(snapshotCalls<=1,'Duplicate snapshot fetches');assert.equal(providerCalls,0);
+  // Price must work directly from a multi-coin comparison and restore that selection.
+  await page.getByRole('button',{name:/^Price ·/}).click();assert.equal(await page.locator('[data-series]').count(),1);assert.equal(await page.locator('[data-series="BTC"]').count(),1);
+  await page.getByRole('button',{name:'Toggle Ethereum',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),1);assert.equal(await page.locator('[data-series="ETH"]').count(),1);assert.equal(await page.getByRole('button',{name:/^Price ·/}).getAttribute('aria-pressed'),'true');
+  await page.getByRole('button',{name:'Performance %',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),8);
+  await page.getByRole('button',{name:'Toggle CREPE',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),7);
+  await page.getByRole('button',{name:/^Price ·/}).click();await page.getByRole('button',{name:'Toggle Kishu Inu',exact:true}).click();assert.equal(await page.locator('[data-series="KISHU"]').count(),1);assert.equal(providerCalls,0);
+  await page.getByRole('button',{name:'Performance %',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),7);assert.equal(await page.locator('[data-series="CREPE"]').count(),0);
   await page.getByRole('button',{name:'Show only Kishu Inu',exact:true}).click();await page.getByRole('button',{name:/^Price ·/}).click();assert.equal(await page.locator('[data-series]').count(),1);assert.equal(providerCalls,0);
   await page.getByRole('button',{name:'Compare all eight',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),8);assert(snapshotCalls<=1);
   await page.getByRole('button',{name:'Five years',exact:true}).click();await page.getByText('This period could not be loaded',{exact:true}).waitFor();assert.equal(providerCalls,0);
@@ -20,5 +27,6 @@ const assert=require('node:assert/strict');
  }
  // A stalled snapshot service must not delay the embedded first chart.
  const page=await browser.newPage();await page.route('**/*',async route=>{if(route.request().url()==='https://tracker.test/'){await route.fulfill({contentType:'text/html',body:html});return;}await route.abort();});await page.goto('https://tracker.test/');assert.equal(await page.locator('[data-series]').count(),8);await page.close();
- await browser.close();console.log('PASS: immediate offline chart, single snapshot request, all periods, rapid selections, tiny prices, mobile widths and isolated Jon George panel.');
+ await browser.close();console.log('PASS: immediate offline chart, single snapshot request, all periods, rapid selections, Price-button switching and comparison restoration, tiny prices, mobile widths and isolated Jon George panel.');
 })().catch(e=>{console.error(e);process.exitCode=1;});
+
