@@ -32,7 +32,7 @@ export async function buildSite(){
  html=html.replace(/(<script id="wtct-bootstrap" type="application\/json">)[\s\S]*?(<\/script>)/,(_,a,b)=>a+JSON.stringify(bootstrap).replace(/</g,'\\u003c')+b);
  const scripts=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].filter(m=>!m[0].includes('application/json'));
  const hashes=scripts.map(m=>'&#x27;sha256-'+createHash('sha256').update(m[1]).digest('base64')+'&#x27;').join(' ');
- html=html.replace(/script-src [^;]+;/,'script-src '+hashes+';');
+ html=html.replace(/script-src .*?; style-src/,'script-src '+hashes+'; style-src');
  await mkdir('_site/data',{recursive:true});await writeFile('_site/index.html',html);await cp('data','_site/data',{recursive:true});await writeFile('_site/data/ranges.json',JSON.stringify(snapshot));
  console.log('Built immediate one-day chart for '+snapshot.ranges['1D'].data.length+' coins; six periods in one '+JSON.stringify(snapshot).length+'-byte snapshot.');return snapshot;
 }
