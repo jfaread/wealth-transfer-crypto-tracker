@@ -1,0 +1,26 @@
+{
+  "name": "wealth-transfer-crypto-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Crypto-Watch and its opt-in phone notification pilot",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node scripts/build-site.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:charts": "node scripts/test-fast-load.cjs",
+    "test:alerts-browser": "node scripts/test-alerts-browser.cjs",
+    "check:worker": "wrangler deploy --dry-run --config alerts/wrangler.jsonc --outdir ../.worker-build",
+    "dev:alerts": "wrangler dev --local --config alerts/wrangler.jsonc"
+  },
+  "dependencies": {
+    "web-push": "4.0.0"
+  },
+  "devDependencies": {
+    "miniflare": "5.20261110.2-beta",
+    "playwright": "1.62.1",
+    "wrangler": "4.161.0"
+  }
+}

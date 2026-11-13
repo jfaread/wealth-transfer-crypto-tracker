@@ -1,0 +1,14 @@
+node_modules/
+_site/
+.wrangler/
+.worker-build/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+alerts/.secrets.json
+qa/
+test-results/
+playwright-report/

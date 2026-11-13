@@ -3,10 +3,13 @@ const fs=require('node:fs/promises');
 const assert=require('node:assert/strict');
 (async()=>{
  const html=await fs.readFile('_site/index.html','utf8'),snapshots=await fs.readFile('_site/data/ranges.json','utf8');
- const browser=await chromium.launch({channel:'chrome',headless:true});
+ const assetTypes={'/assets/alerts.js':'text/javascript','/assets/alerts.css':'text/css','/alerts-config.json':'application/json','/manifest.webmanifest':'application/manifest+json','/sw.js':'text/javascript','/icons/cw.svg':'image/svg+xml','/icons/cw-192.png':'image/png','/icons/cw-512.png':'image/png'};
+ const assets=new Map(await Promise.all(Object.entries(assetTypes).map(async([path,contentType])=>[path,{contentType,body:await fs.readFile('_site'+path)}])));
+ async function serveAsset(route){const u=new URL(route.request().url());if(u.origin!=='https://tracker.test'||!assets.has(u.pathname))return false;await route.fulfill(assets.get(u.pathname));return true;}
+ const browser=await chromium.launch(require('./browser-launch.cjs')());
  for(const width of [320,390,768,1440]){
   const page=await browser.newPage({viewport:{width,height:900},reducedMotion:'reduce'});let providerCalls=0,snapshotCalls=0;
-  await page.route('**/*',async route=>{const u=new URL(route.request().url());if(u.origin==='https://tracker.test'&&u.pathname==='/'){await route.fulfill({contentType:'text/html',body:html});return;}if(u.origin==='https://tracker.test'&&u.pathname==='/data/ranges.json'){snapshotCalls++;await new Promise(r=>setTimeout(r,150));await route.fulfill({contentType:'application/json',body:snapshots});return;}if(u.hostname.includes('binance')||u.hostname.includes('coingecko'))providerCalls++;await route.abort();});
+  await page.route('**/*',async route=>{const u=new URL(route.request().url());if(u.origin==='https://tracker.test'&&u.pathname==='/'){await route.fulfill({contentType:'text/html',body:html});return;}if(u.origin==='https://tracker.test'&&u.pathname==='/data/ranges.json'){snapshotCalls++;await new Promise(r=>setTimeout(r,150));await route.fulfill({contentType:'application/json',body:snapshots});return;}if(u.hostname.includes('binance')||u.hostname.includes('coingecko'))providerCalls++;if(await serveAsset(route))return;await route.abort();});
   const started=Date.now();await page.goto('https://tracker.test/',{waitUntil:'domcontentloaded'});await page.locator('[data-series="CREPE"]').waitFor({timeout:1500});const firstChartMs=Date.now()-started;
   assert.equal(await page.locator('[data-series]').count(),8);assert.equal(providerCalls,0);
   const layout=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));assert(layout.scroll<=layout.width,JSON.stringify({width,...layout}));
@@ -29,7 +32,7 @@ const assert=require('node:assert/strict');
   await fs.mkdir('qa',{recursive:true});await page.screenshot({path:`qa/tracker-${width}.png`,fullPage:true});console.log(JSON.stringify({width,firstChartMs,snapshotCalls,providerCalls}));await page.close();
  }
  // A stalled snapshot service must not delay the embedded first chart.
- const page=await browser.newPage();await page.route('**/*',async route=>{if(route.request().url()==='https://tracker.test/'){await route.fulfill({contentType:'text/html',body:html});return;}await route.abort();});await page.goto('https://tracker.test/');assert.equal(await page.locator('[data-series]').count(),8);await page.close();
+ const page=await browser.newPage();await page.route('**/*',async route=>{if(route.request().url()==='https://tracker.test/'){await route.fulfill({contentType:'text/html',body:html});return;}if(await serveAsset(route))return;await route.abort();});await page.goto('https://tracker.test/');assert.equal(await page.locator('[data-series]').count(),8);await page.close();
  // Manual refresh must fetch fresh quotes, preserve history and permit immediate retries after failure.
  const oldSnapshots=JSON.parse(snapshots),aged=Date.now()-3*3600000;
  for(const b of Object.values(oldSnapshots.ranges)){b.savedAt=aged;b.spec.historySavedAt=aged;}
@@ -37,7 +40,7 @@ const assert=require('node:assert/strict');
  const refreshPage=await browser.newPage();let quoteCalls=0,failQuotes=false;
  const cg={BTC:'bitcoin',ETH:'ethereum',BNB:'binancecoin',XRP:'ripple',SOL:'solana',KISHU:'kishu-inu',WKC:'wiki-cat',CREPE:'crepe-2'};
  const quoteResponse=Object.fromEntries(oldSnapshots.ranges['1D'].data.map(([id,d])=>[cg[id],{usd:d.points.at(-1).p*1.01,last_updated_at:Math.floor(Date.now()/1000)}]));
- await refreshPage.route('**/*',async route=>{const u=new URL(route.request().url());if(u.origin==='https://tracker.test'&&u.pathname==='/'){await route.fulfill({contentType:'text/html',body:oldHtml});return;}if(u.origin==='https://tracker.test'&&u.pathname==='/data/ranges.json'){await route.fulfill({contentType:'application/json',body:JSON.stringify(oldSnapshots)});return;}if(u.hostname==='api.coingecko.com'&&u.pathname==='/api/v3/simple/price'){quoteCalls++;await new Promise(r=>setTimeout(r,200));await route.fulfill({status:failQuotes?503:200,contentType:'application/json',body:JSON.stringify(failQuotes?{}:quoteResponse)});return;}await route.abort();});
+ await refreshPage.route('**/*',async route=>{const u=new URL(route.request().url());if(u.origin==='https://tracker.test'&&u.pathname==='/'){await route.fulfill({contentType:'text/html',body:oldHtml});return;}if(u.origin==='https://tracker.test'&&u.pathname==='/data/ranges.json'){await route.fulfill({contentType:'application/json',body:JSON.stringify(oldSnapshots)});return;}if(u.hostname==='api.coingecko.com'&&u.pathname==='/api/v3/simple/price'){quoteCalls++;await new Promise(r=>setTimeout(r,200));await route.fulfill({status:failQuotes?503:200,contentType:'application/json',body:JSON.stringify(failQuotes?{}:quoteResponse)});return;}if(await serveAsset(route))return;await route.abort();});
  await refreshPage.goto('https://tracker.test/');await refreshPage.locator('[data-series="CREPE"]').waitFor();
  await refreshPage.locator('#refresh').click();assert(await refreshPage.locator('#refresh').isDisabled());await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert.equal(quoteCalls,1);assert(await refreshPage.locator('#refresh').isEnabled());
  const freshState=await refreshPage.evaluate(()=>window.WealthTransferCryptoTracker.getState());assert(Date.now()-freshState.end<300000);assert.equal(freshState.series.length,8);assert(freshState.series.every(x=>x.last.p>0));assert((await refreshPage.locator('#warning').innerText()).includes('history'));

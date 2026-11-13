@@ -1,0 +1,21 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "crypto-watch-alerts",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {"enabled": false},
+  "vars": {
+    "ALERTS_ENABLED": "false",
+    "ALLOWED_ORIGIN": "https://jfaread.github.io",
+    "PUBLIC_SITE_URL": "https://jfaread.github.io/wealth-transfer-crypto-tracker/",
+    "MAX_DEVICES": "50",
+    "MAX_FEED_FRAMES_PER_DAY": "1000000"
+  },
+  "durable_objects": {
+    "bindings": [{"name": "ALERT_MONITOR", "class_name": "CryptoAlertMonitor"}]
+  },
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["CryptoAlertMonitor"]}]
+}

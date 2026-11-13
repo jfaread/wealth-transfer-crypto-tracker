@@ -1,6 +1,23 @@
 import {readFile,writeFile,mkdir,cp} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 export const COIN_IDS=['BTC','ETH','BNB','XRP','SOL','KISHU','WKC','CREPE'];
+const STATIC_FILES=['assets','icons','manifest.webmanifest','sw.js','alerts-config.json','.nojekyll'];
+export function alertApiOrigin(config){
+ if(!config||config.version!==1)throw Error('Invalid alert configuration');
+ if(config.apiBase===null)return null;
+ if(typeof config.apiBase!=='string')throw Error('Invalid alert API address');
+ const u=new URL(config.apiBase);
+ if(u.protocol!=='https:'||u.username||u.password||u.port||u.search||u.hash||!/^crypto-watch-alerts\.[a-z0-9-]+\.workers\.dev$/.test(u.hostname)||u.pathname!=='/')throw Error('Use the dedicated Crypto-Watch Workers HTTPS origin');
+ return u.origin;
+}
+export function applySiteCsp(html,config){
+ const origin=alertApiOrigin(config);
+ const hashes=[...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)].filter(([,attrs])=>!(/\bsrc\s*=/.test(attrs)||/type\s*=\s*["']application\/json["']/.test(attrs))).map(([, ,source])=>"'sha256-"+createHash('sha256').update(source).digest('base64')+"'");
+ const policy="default-src 'none'; script-src 'self' "+hashes.join(' ')+"; style-src 'self' 'unsafe-inline'; connect-src 'self' https://data-api.binance.vision https://api.rss2json.com https://api.coingecko.com"+(origin?' '+origin:'')+"; img-src 'self' data:; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'";
+ if(!/<meta http-equiv="Content-Security-Policy"/.test(html))throw Error('Missing site content security policy');
+ return html.replace(/(<meta http-equiv="Content-Security-Policy" content=")[^"]*("\s*\/?>)/,(_,a,b)=>a+policy+b);
+}
 const DAY=86400000,HOUR=3600000;
 function subtractMonths(t,n){const d=new Date(t),day=d.getUTCDate();d.setUTCDate(1);d.setUTCMonth(d.getUTCMonth()-n);const last=new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,0)).getUTCDate();d.setUTCDate(Math.min(day,last));return+d;}
 export function buildSnapshot(items,manifest,now=Date.now()){
@@ -27,9 +44,12 @@ export function buildSnapshot(items,manifest,now=Date.now()){
 export async function buildSite(){
  const manifest=JSON.parse(await readFile('data/manifest.json','utf8')),items={};for(const id of COIN_IDS)items[id]=JSON.parse(await readFile('data/'+id+'.json','utf8'));
  const snapshot=buildSnapshot(items,manifest);let html=await readFile('index.html','utf8');
+ const alertConfig=JSON.parse(await readFile('alerts-config.json','utf8'));
  const bootstrap={version:1,initial:{range:'1D',coins:COIN_IDS,view:'performance'},ranges:{'1D':snapshot.ranges['1D']}};
  html=html.replace(/(<script id="wtct-bootstrap" type="application\/json">)[\s\S]*?(<\/script>)/,(_,a,b)=>a+JSON.stringify(bootstrap).replace(/</g,'\\u003c')+b);
+ html=applySiteCsp(html,alertConfig);
  await mkdir('_site/data',{recursive:true});await writeFile('_site/index.html',html);await cp('data','_site/data',{recursive:true});await writeFile('_site/data/ranges.json',JSON.stringify(snapshot));
+ for(const file of STATIC_FILES)await cp(file,'_site/'+file,{recursive:true});
  console.log('Built immediate one-day chart for '+snapshot.ranges['1D'].data.length+' coins; six periods in one '+JSON.stringify(snapshot).length+'-byte snapshot.');return snapshot;
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)await buildSite();
