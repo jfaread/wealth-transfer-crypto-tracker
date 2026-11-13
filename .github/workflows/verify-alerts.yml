@@ -21,7 +21,7 @@ concurrency:
   group: verify-alerts-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  verify:
+  backend:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -35,6 +35,16 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check:worker
       - run: npm test
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.13.1'
+          cache: npm
+      - run: npm ci --ignore-scripts
       # Reuse genuine committed market observations for visual checks. An older
       # branch must be refreshed before merge; tests must never invent prices.
       - run: npm run build
