@@ -5,7 +5,7 @@ const assert=require('node:assert/strict');
  const html=await fs.readFile('_site/index.html','utf8'),snapshots=await fs.readFile('_site/data/ranges.json','utf8');
  const browser=await chromium.launch({channel:'chrome',headless:true});
  for(const width of [320,390,768,1440]){
-  const page=await browser.newPage({viewport:{width,height:900},reducedMotion:'reduce'});let providerCalls=0,snapshotCalls=0;
+  const page=await browser.newPage({viewport:{width,height:900},reducedMotion:'reduce'});let providerCalls=0,snapshotCalls=0;page.on('pageerror',e=>console.error('PAGE ERROR',e.stack));
   await page.route('**/*',async route=>{const u=new URL(route.request().url());if(u.origin==='https://tracker.test'&&u.pathname==='/'){await route.fulfill({contentType:'text/html',body:html});return;}if(u.origin==='https://tracker.test'&&u.pathname==='/data/ranges.json'){snapshotCalls++;await new Promise(r=>setTimeout(r,150));await route.fulfill({contentType:'application/json',body:snapshots});return;}if(u.hostname.includes('binance')||u.hostname.includes('coingecko'))providerCalls++;await route.abort();});
   const started=Date.now();await page.goto('https://tracker.test/',{waitUntil:'domcontentloaded'});await page.locator('[data-series="CREPE"]').waitFor({timeout:1500});const firstChartMs=Date.now()-started;
   assert.equal(await page.locator('[data-series]').count(),8);assert.equal(providerCalls,0);
@@ -46,7 +46,7 @@ const assert=require('node:assert/strict');
  failQuotes=false;await refreshPage.locator('#refresh').click();await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert.equal(quoteCalls,3);assert(!/15 seconds|allow 15/i.test(await refreshPage.locator('body').innerText()));serveHistory=true;await refreshPage.locator('#refresh').click();await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert(historyCalls>=8);assert(await refreshPage.locator('#warning').isHidden(),'Repaired history should clear warning');await refreshPage.locator('#wtct-timezone').selectOption('America/New_York');await refreshPage.reload();assert.equal(await refreshPage.locator('#wtct-timezone').inputValue(),'America/New_York');assert((await refreshPage.locator('#dates').innerText()).includes('Eastern Time'));await refreshPage.close();
  console.log('PASS: history repair, persisted Eastern Time, current-quote refresh, in-flight button guard, retained dated history, failed-refresh recovery and immediate retry.');
  await browser.close();console.log('PASS: immediate offline chart, single snapshot request, all periods, rapid selections, Price-button switching and comparison restoration, tiny prices, mobile widths and isolated Jon George panel.');
-})().catch(e=>{console.error(e);process.exitCode=1;});
+})().catch(e=>{console.error(e);process.exit(1);});
 
 
 
