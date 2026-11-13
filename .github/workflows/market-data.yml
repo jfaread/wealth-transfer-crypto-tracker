@@ -17,7 +17,7 @@ permissions:
   id-token: write
 concurrency:
   group: public-market-data
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   refresh:
     if: github.event.repository.private == false
@@ -52,6 +52,7 @@ jobs:
         run: |
           node scripts/build-site.mjs
       - name: Verify fast loading and responsive layout
+        timeout-minutes: 2
         if: github.event_name == 'push'
         run: |
           npm install --no-save --ignore-scripts playwright
