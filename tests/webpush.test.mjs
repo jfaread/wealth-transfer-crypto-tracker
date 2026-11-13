@@ -174,6 +174,107 @@ test('uses the supplied clock for both VAPID expiry and event freshness on Apple
   assert.equal(decryptPush(request.body).observedAt, clock);
 });
 
+async function capturePushAt(clock, overrides = {}, sender = sendPush) {
+  const { endpoint = 'https://web.push.apple.com/cache-test-recipient', ...signing } = overrides;
+  let request;
+  const result = await sender({ ...subscription, endpoint }, {
+    ...payload, observedAt: clock, expiresAt: clock + 120_000,
+  }, {
+    ...baseOptions, ...signing, now: clock,
+    fetchImpl: async (url, init) => { request = { url, ...init }; return new Response(null, { status: 201 }); },
+  });
+  return { result, request, authorization: request && new Headers(request.headers).get('Authorization') };
+}
+
+function vapidClaims(authorization) {
+  const token = /^vapid t=([^,]+),/.exec(authorization)[1];
+  return JSON.parse(Buffer.from(token.split('.')[1], 'base64url'));
+}
+
+test('reuses one VAPID token across recipients while encrypting every payload afresh', async () => {
+  const identity = generateVAPIDKeys();
+  const first = await capturePushAt(now, identity);
+  const second = await capturePushAt(now + 1500, { ...identity, endpoint: 'https://web.push.apple.com/another-recipient' });
+  assert.equal(first.result.status, 'accepted');
+  assert.equal(second.result.status, 'accepted');
+  assert.equal(second.authorization, first.authorization, 'recipient paths and observation times must not rotate the provider JWT');
+  assert.notDeepEqual(second.request.body, first.request.body, 'reuse authorisation, not encrypted message bytes');
+  assert.equal(decryptPush(first.request.body).observedAt, now);
+  assert.equal(decryptPush(second.request.body).observedAt, now + 1500);
+});
+
+test('isolates cached authorisation by origin, signing key pair and subject', async () => {
+  const identity = generateVAPIDKeys();
+  const original = await capturePushAt(now, identity);
+  const differentOrigin = await capturePushAt(now, { ...identity, endpoint: 'https://region.push.apple.com/recipient' });
+  const differentSubject = await capturePushAt(now, { ...identity, subject: 'mailto:alerts@example.com' });
+  const differentKeys = await capturePushAt(now, generateVAPIDKeys());
+  for (const attempt of [differentOrigin, differentSubject, differentKeys]) {
+    assert.equal(attempt.result.status, 'accepted');
+    assert.notEqual(attempt.authorization, original.authorization);
+  }
+  assert.equal(vapidClaims(differentOrigin.authorization).aud, 'https://region.push.apple.com');
+  assert.equal(vapidClaims(differentSubject.authorization).sub, 'mailto:alerts@example.com');
+  const invalidPrivateKey = await capturePushAt(now, { ...identity, privateKey: 'invalid-private-key' });
+  assert.deepEqual(invalidPrivateKey.result, { status: 'failed', httpStatus: 0 });
+  assert.equal(invalidPrivateKey.request, undefined, 'a previously cached public key must not conceal a changed invalid private key');
+});
+
+test('renews cached tokens near expiry and never sends an expired cached token', async () => {
+  const clock = now - 13 * 3600_000;
+  const identity = generateVAPIDKeys();
+  const first = await capturePushAt(clock, identity);
+  const oneHourLater = await capturePushAt(clock + 3600_000, identity);
+  const beforeRenewal = await capturePushAt(clock + 12 * 3600_000 - 301_000, identity);
+  assert.equal(oneHourLater.authorization, first.authorization);
+  assert.equal(beforeRenewal.authorization, first.authorization);
+  const renewalTime = clock + 12 * 3600_000 - 300_000;
+  const renewed = await capturePushAt(renewalTime, identity);
+  assert.equal(renewed.result.status, 'accepted');
+  assert.notEqual(renewed.authorization, first.authorization);
+  assert.equal(vapidClaims(renewed.authorization).exp, Math.floor(renewalTime / 1000) + 12 * 3600);
+
+  const idleIdentity = generateVAPIDKeys();
+  const beforeIdle = await capturePushAt(clock, idleIdentity);
+  const afterIdle = await capturePushAt(now, idleIdentity);
+  assert.equal(afterIdle.result.status, 'accepted');
+  assert.notEqual(afterIdle.authorization, beforeIdle.authorization);
+  assert.ok(vapidClaims(afterIdle.authorization).exp > Math.floor(now / 1000));
+});
+
+test('keeps a valid token on clock rollback but discards one beyond the 24-hour future limit', async () => {
+  const identity = generateVAPIDKeys();
+  const first = await capturePushAt(now, identity);
+  const smallRollback = await capturePushAt(now - 3600_000, identity);
+  assert.equal(smallRollback.authorization, first.authorization);
+  const rolledBackTime = now - 13 * 3600_000;
+  const largeRollback = await capturePushAt(rolledBackTime, identity);
+  assert.equal(largeRollback.result.status, 'accepted');
+  assert.notEqual(largeRollback.authorization, first.authorization);
+  assert.equal(vapidClaims(largeRollback.authorization).exp, Math.floor(rolledBackTime / 1000) + 12 * 3600);
+});
+
+test('bounds the signing cache without evicting tokens less than an hour old', async () => {
+  // A fresh module instance isolates this resource-limit test from other tests;
+  // production still exports only the normal validation and send operations.
+  const { sendPush: isolatedSend } = await import('../alerts/webpush.mjs?cache-capacity-test');
+  const identity = generateVAPIDKeys();
+  const scope = slot => ({ ...identity, endpoint: `https://slot-${slot}.push.apple.com/recipient` });
+  let first;
+  for (let slot = 0; slot < 64; slot++) {
+    const attempt = await capturePushAt(now, scope(slot), isolatedSend);
+    assert.equal(attempt.result.status, 'accepted');
+    if (slot === 0) first = attempt;
+  }
+  const overCapacity = await capturePushAt(now, scope(64), isolatedSend);
+  assert.deepEqual(overCapacity.result, { status: 'failed', httpStatus: 0 });
+  assert.equal(overCapacity.request, undefined);
+  const firstAgain = await capturePushAt(now + 1000, scope(0), isolatedSend);
+  assert.equal(firstAgain.authorization, first.authorization, 'capacity pressure must not cause an early provider-token refresh');
+  const afterOneHour = await capturePushAt(now + 3600_000, scope(64), isolatedSend);
+  assert.equal(afterOneHour.result.status, 'accepted', 'an old entry can be evicted after the minimum reuse interval');
+});
+
 test('rejects stale, expired, oversize or malformed messages before any network call', async () => {
   const invalid = [
     { ...payload, version: 2 },

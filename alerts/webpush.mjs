@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { ECDH } from 'node:crypto';
+import { ECDH, createHash } from 'node:crypto';
 import { generateRequestDetails, getVapidHeaders } from 'web-push';
 
 export const TRACKER_URL = 'https://jfaread.github.io/wealth-transfer-crypto-tracker/';
@@ -7,6 +7,46 @@ const MAX_PAYLOAD_BYTES = 1600;
 const MAX_TTL_SECONDS = 300;
 const REQUEST_TIMEOUT_MS = 10_000;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
+const VAPID_LIFETIME_SECONDS = 12 * 3600;
+const VAPID_REFRESH_MARGIN_SECONDS = 5 * 60;
+const VAPID_MIN_REUSE_SECONDS = 3600;
+const VAPID_CACHE_LIMIT = 64;
+const vapidHeaderCache = new Map();
+
+function cachedVapidHeaders(origin, subject, publicKey, privateKey, nowMs) {
+  if (typeof subject !== 'string' || subject.length > 2048 || typeof publicKey !== 'string' || publicKey.length > 128
+    || typeof privateKey !== 'string' || privateKey.length > 128) throw new Error('The push signing configuration is invalid.');
+  // Cache by the complete signing identity and audience, never by a recipient's
+  // private endpoint. Only a digest of the private key appears in the map key.
+  const cacheKey = createHash('sha256').update(JSON.stringify([origin, subject, publicKey, privateKey])).digest('hex');
+  const nowSeconds = Math.floor(nowMs / 1000);
+  const previous = vapidHeaderCache.get(cacheKey);
+  if (previous && previous.expiresAt > nowSeconds + VAPID_REFRESH_MARGIN_SECONDS
+    && previous.expiresAt <= nowSeconds + 24 * 3600) {
+    vapidHeaderCache.delete(cacheKey);
+    vapidHeaderCache.set(cacheKey, previous);
+    return previous.headers;
+  }
+
+  // Apple explicitly says not to refresh VAPID JWTs more than once an hour:
+  // https://developer.apple.com/documentation/usernotifications/sending-web-push-notifications-in-web-apps-and-browsers.md
+  // A 12-hour token is reused until five minutes before expiry. Clock rollback
+  // invalidates a cached token only if its expiry would exceed the 24-hour limit.
+  for (const [key, entry] of vapidHeaderCache) {
+    if (entry.expiresAt <= nowSeconds || entry.expiresAt > nowSeconds + 24 * 3600) vapidHeaderCache.delete(key);
+  }
+  if (!vapidHeaderCache.has(cacheKey) && vapidHeaderCache.size >= VAPID_CACHE_LIMIT) {
+    // Do not evict a recently issued token merely to admit another identity:
+    // that could force an Apple token to be regenerated inside the same hour.
+    const evictable = Array.from(vapidHeaderCache).find(([, entry]) => entry.issuedAt <= nowSeconds - VAPID_MIN_REUSE_SECONDS);
+    if (!evictable) throw new Error('The push signing cache is temporarily full.');
+    vapidHeaderCache.delete(evictable[0]);
+  }
+  const expiresAt = nowSeconds + VAPID_LIFETIME_SECONDS;
+  const headers = Object.freeze({ ...getVapidHeaders(origin, subject, publicKey, privateKey, 'aes128gcm', expiresAt) });
+  vapidHeaderCache.set(cacheKey, { headers, issuedAt: nowSeconds, expiresAt });
+  return headers;
+}
 
 function decodeKey(value, byteLength, message) {
   if (typeof value !== 'string' || !BASE64URL.test(value)) throw new Error(message);
@@ -126,13 +166,12 @@ export async function sendPush(subscription, payload, options = {}) {
       urgency: 'high',
       TTL: timeToLive,
     });
-    Object.assign(details.headers, getVapidHeaders(
+    Object.assign(details.headers, cachedVapidHeaders(
       new URL(cleanSubscription.endpoint).origin,
       subject,
       publicKey,
       privateKey,
-      'aes128gcm',
-      Math.floor(timestamp / 1000) + 12 * 3600,
+      timestamp,
     ));
   } catch {
     // Library errors can contain private endpoints or keys; never return them.

@@ -334,6 +334,12 @@
     return jsonRequest(apiBase + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   }
 
+  async function readConfig() {
+    const value = validConfig(await api('/v1/config'));
+    if (!value) throw new Error('The alert service configuration is incomplete. Try Check service later.');
+    config = value;
+  }
+
   async function readDevice() {
     const value = await api('/v1/device', 'GET', undefined, true);
     const savedRules = rules(value.rules);
@@ -395,8 +401,7 @@
     apiBase = validatedBase(value.apiBase);
     if (!apiBase) { checked = true; setupProblem = 'The configured service address is invalid; no device access was sent.'; return; }
     serviceKey = await digest(apiBase);
-    config = validConfig(await api('/v1/config'));
-    if (!config) throw new Error('The alert service configuration is incomplete. Try Check service later.');
+    await readConfig();
     checked = true;
     if (usableAuth()) await readDevice();
     if (local.auth && !usableAuth()) return;
@@ -493,6 +498,9 @@
       try { persist(); }
       catch (_) { throw new Error('The connection was created, but this browser could not remember its access. Disconnect this device now before closing this page. No drafts were activated.'); }
       await readDevice();
+      // The first device may start the live feeds. Recheck which sources are
+      // ready before deciding whether its saved drafts can become active rules.
+      await readConfig();
       if (eligibleDrafts().length) await activateDrafts();
       else notice('This device is connected. Add an available coin threshold or request a test alert. Unavailable coin drafts remain inactive.');
     });

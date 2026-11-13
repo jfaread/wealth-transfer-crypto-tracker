@@ -2,7 +2,7 @@ name: Refresh public market data
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '23 * * * *'
   push:
     branches: [main]
     paths:
@@ -25,7 +25,7 @@ permissions:
   id-token: write
 concurrency:
   group: public-market-data
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   refresh:
     if: github.event.repository.private == false
@@ -60,6 +60,7 @@ jobs:
         run: |
           node scripts/build-site.mjs
       - name: Verify fast loading and responsive layout
+        timeout-minutes: 2
         if: github.event_name == 'push'
         run: |
           npm ci --ignore-scripts

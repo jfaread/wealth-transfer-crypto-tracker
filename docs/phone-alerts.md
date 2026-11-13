@@ -86,7 +86,9 @@ Disconnect removes server rules and pending events first, then unsubscribes the 
 
 ## Activation without changing the public address
 
-All code can be reviewed and tested before authorising deployment. Required next steps are:
+For a dashboard setup that creates the private push keys inside the authorised Cloudflare build, use the [owner connection guide](activate-phone-alerts.md). The helper preserves complete existing keys, stops on partial or failed secret checks, and honours the versioned activation setting. Its free-plan confirmation is an owner attestation, not an automated billing-plan check. The owner's Cloudflare account still needs to be connected before this route can be verified.
+
+The original authorised-CLI route is also available. Required steps are:
 
 1. Connect an authorised Cloudflare account and confirm **Workers Free**, available quotas and ownership of the intended Worker namespace. There is no Cloudflare deployment connection configured in this repository. No token needs to be pasted into chat or committed.
 2. Run `npm ci --ignore-scripts`, `npm run check:worker` and `npm test`. The runtime smoke test needs the freshly built `.worker-build/worker.js` artifact. It uses ephemeral keys and completely mocked outbound connections.

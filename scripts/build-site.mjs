@@ -1,5 +1,5 @@
-import {readFile,writeFile,mkdir,cp} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
+import {readFile,writeFile,mkdir,cp} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 export const COIN_IDS=['BTC','ETH','BNB','XRP','SOL','KISHU','WKC','CREPE'];
 const STATIC_FILES=['assets','icons','manifest.webmanifest','sw.js','alerts-config.json','.nojekyll'];

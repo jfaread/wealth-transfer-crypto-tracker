@@ -12,6 +12,7 @@
     "test": "node --test tests/*.test.mjs",
     "test:charts": "node scripts/test-fast-load.cjs",
     "test:alerts-browser": "node scripts/test-alerts-browser.cjs",
+    "deploy:alerts": "node scripts/deploy-alerts.mjs",
     "check:worker": "wrangler deploy --dry-run --config alerts/wrangler.jsonc --outdir ../.worker-build",
     "dev:alerts": "wrangler dev --local --config alerts/wrangler.jsonc"
   },

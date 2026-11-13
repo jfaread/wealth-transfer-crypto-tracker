@@ -12,7 +12,7 @@ The alert implementation uses opt-in Web Push for UK and US users. One backgroun
 
 The first live-feed adapter covers BTC, ETH, BNB, XRP and SOL on Kraken's true USD pairs. KISHU, Wiki Cat and CREPE retain their exact contract identities but remain draft-only until dependable live feeds for those tokens are validated. The existing chart continues to cover all eight coins.
 
-Read [the implementation and activation guide](docs/phone-alerts.md) for behaviour, limits, privacy, testing and remaining work.
+Read [the owner setup guide](docs/activate-phone-alerts.md) to connect a free Cloudflare account without copying private push keys. The [implementation guide](docs/phone-alerts.md) explains behaviour, limits, privacy, testing and remaining work.
 
 ## Development
 
@@ -29,4 +29,4 @@ npm run test:alerts-browser
 
 Browser checks use installed Chrome or Chromium. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` can select an installed browser. Runtime tests use the actual Worker bundle with outbound traffic fully mocked; they do not send real notifications.
 
-The public market-data workflow retains its `17 * * * *` schedule. The schedule's presence does **not** establish that hourly executions are taking place; that remains unverified. Manual price refresh operates independently of the alert service and the historical-data build.
+The current public market-data workflow has a `23 * * * *` schedule. The schedule's presence does **not** establish that hourly executions are taking place; that remains unverified. Manual price refresh operates independently of the alert service and the historical-data build.

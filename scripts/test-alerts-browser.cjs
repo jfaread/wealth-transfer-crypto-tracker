@@ -106,6 +106,58 @@ const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.jso
    await context.close();
   }
 
+  // The first enrolment can start a previously idle feed. Draft activation must
+  // use its refreshed capabilities, without requiring a separate Check service.
+  for(const failFreshConfig of [false,true]){
+   const cold=await browser.newContext({viewport:{width:390,height:900},reducedMotion:'reduce'});
+   await mockBrowser(cold);
+   let registered=false,saved=[],revision=0;
+   const records=[];
+   const reply=(route,value,status=200)=>route.fulfill({status,contentType:'application/json',headers:cors,body:JSON.stringify(value)});
+   await mount(cold,true,async route=>{
+    const req=route.request(),path=new URL(req.url()).pathname,method=req.method();
+    records.push(method+' '+path);
+    if(path==='/v1/config'){
+     if(registered&&failFreshConfig)return reply(route,{error:{code:'temporarily_unavailable'}},503);
+     const value=config();
+     if(!registered)value.coins=value.coins.map(coin=>({...coin,enabled:false,reason:coin.enabled?'Waiting for the first fresh quote.':coin.reason}));
+     return reply(route,value);
+    }
+    if(path==='/v1/devices'&&method==='POST'){
+     registered=true;return reply(route,{deviceId:DEVICE,token:TOKEN,rules:[],revision:0},201);
+    }
+    assert(registered);assert.equal(req.headers().authorization,'Bearer '+TOKEN);
+    if(path==='/v1/device'&&method==='GET')return reply(route,{deviceId:DEVICE,rules:saved,revision,events:[],monitor:{status:'live',lastObservedAt:Date.now()}});
+    if(path==='/v1/rules'&&method==='PUT'){
+     const input=req.postDataJSON();assert.equal(input.revision,revision);
+     saved=input.rules;revision++;return reply(route,{rules:saved,revision});
+    }
+    throw Error('Unexpected first-enrolment API request');
+   });
+   const page=await cold.newPage();await open(page);
+   await add(page,'BTC','100');await add(page,'KISHU','0.0000000001');
+   assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),2);
+   await page.locator('#wa-connect').click();await page.getByText(/Notification permission is allowed/).waitFor();
+   await page.locator('#wa-connect').click();
+   await page.waitForFunction(()=>document.getElementById('wtct-alerts-dialog').getAttribute('aria-busy')==='false');
+   assert.equal(await page.evaluate(key=>JSON.parse(localStorage.getItem(key)).auth.token,KEY),TOKEN,'the device token must survive the post-registration capability check');
+   assert.deepEqual(records.slice(0,4),['GET /v1/config','POST /v1/devices','GET /v1/device','GET /v1/config']);
+   if(failFreshConfig){
+    assert.equal(saved.length,0);assert.equal(records.length,4);
+    assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),2);
+    assert.match(await page.locator('#wa-message').innerText(),/saved settings have been kept/);
+   }else{
+    assert.equal(records[4],'PUT /v1/rules');assert.equal(records.length,5);
+    assert.deepEqual(saved.map(rule=>({coin:rule.coin,threshold:rule.threshold,enabled:rule.enabled})),[{coin:'BTC',threshold:'100',enabled:true}]);
+    assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),1);
+    assert.match(await page.locator('#wa-draft-rules').innerText(),/KISHU/);
+    await page.locator('#wa-coin').selectOption('BTC');
+    assert.equal(await page.locator('#wa-save-rule').innerText(),'Save alert with the monitor');
+   }
+   await cold.close();
+  }
+  console.log('PASS: first enrolment refreshes feed capabilities before activating a supported draft; unavailable-token drafts and device access survive a failed capability refresh.');
+
   const context=await browser.newContext({viewport:{width:390,height:900},reducedMotion:'reduce'});
   await mockBrowser(context);
   let registered=false,revision=0,saved=[],conflict=false,failDelete=true,testRequests=0;
