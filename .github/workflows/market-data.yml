@@ -6,6 +6,8 @@ on:
   push:
     paths:
       - 'index.html'
+      - 'scripts/test-fast-load.cjs'
+      - 'scripts/build-site.mjs'
       - 'scripts/refresh-market-data.mjs'
       - '.github/workflows/market-data.yml'
 permissions:
@@ -29,8 +31,10 @@ jobs:
           ref: main
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '26'
       - run: node scripts/refresh-market-data.mjs
+        env:
+          REUSE_MARKET_DATA: ${{ github.event_name == 'push' && 'true' || 'false' }}
       - name: Commit verified public prices
         run: |
           git config user.name 'crypto-tracker-data'
@@ -43,9 +47,12 @@ jobs:
           fi
       - name: Prepare static site
         run: |
-          mkdir _site
-          cp index.html _site/
-          cp -r data _site/
+          node scripts/build-site.mjs
+      - name: Verify fast loading and responsive layout
+        if: github.event_name == 'push'
+        run: |
+          npm install --no-save --ignore-scripts playwright
+          node scripts/test-fast-load.cjs
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
