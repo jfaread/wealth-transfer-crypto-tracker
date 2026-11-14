@@ -2,7 +2,15 @@
 
 The website stays at **<https://jfaread.github.io/wealth-transfer-crypto-tracker/>**. Cloudflare hosts only the background price monitor and notification service. The checked-in configuration is inactive until this connection and the launch checks are complete.
 
-## One account connection by the owner
+## Connect through the registered ChatGPT App
+
+Use the existing [Crypto-Watch Cloudflare Connection](https://chatgpt.com/plugins/plugin_asdk_app_6af7aa86d9f88191aabe2560c9f126e6) and complete Cloudflare authorisation. The original Crypto-Watch Cloudflare plugin now references that same App. Its package source and connection checkpoint are in [the integration guide](../integrations/cloudflare-connection/README.md).
+
+Verify the authenticated identity and intended account with read-only tools before changing resources. A visible tool list is not proof of an authenticated account. If the identity check requires reauthentication, complete the existing App's Connect/Reconnect flow before further account calls.
+
+Inspect any existing `crypto-watch-alerts` Worker and verify Workers Free through the actual dashboard plan or the owner's confirmation. Keep the reviewed deployment, secret-preservation and activation checks below for either the authorised MCP route or the GitHub build route. The source remains inactive until those checks pass.
+
+## Alternative: connect GitHub deployment in Cloudflare
 
 Open [Cloudflare Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages), sign in and select an account on **Workers Free**. Confirm the plan in the dashboard before continuing. This project uses the free allowances and pauses when its limits are reached; it does not purchase a plan or add billing.
 

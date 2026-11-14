@@ -1,0 +1,22 @@
+{
+  "interface": {
+    "capabilities": [],
+    "category": "Developer Tools",
+    "composerIcon": "./assets/icon.png",
+    "defaultPrompt": "Deploy Crypto-Watch phone alerts on Workers Free, preserving the shared website URL and other projects.",
+    "developerName": "James Read",
+    "displayName": "Crypto-Watch Cloudflare",
+    "logo": "./assets/icon.png",
+    "longDescription": "Use the registered Crypto-Watch Cloudflare Connection to access Cloudflare's official hosted API MCP server through OAuth. This private plugin supports preparing and maintaining the crypto-watch-alerts backend for jfaread/wealth-transfer-crypto-tracker. Cloudflare controls account selection and granted permissions. Its API tools can access the resources covered by that grant; the plugin itself does not create an additional technical account or project boundary. Keep work limited to the authorised Crypto-Watch backend, verify Workers Free before deployment, preserve existing notification keys and the shared GitHub Pages address, and leave other projects unchanged. Updating this plugin does not authenticate the account, deploy a Worker or activate phone notifications.",
+    "shortDescription": "Private Cloudflare connection"
+  },
+  "name": "crypto-watch-cloudflare",
+  "version": "0.1.1",
+  "description": "Private connection to Cloudflare's official API MCP server for the Crypto-Watch phone alert backend.",
+  "author": {
+    "name": "James Read"
+  },
+  "keywords": [],
+  "repository": "https://github.com/jfaread/wealth-transfer-crypto-tracker",
+  "apps": "./.app.json"
+}

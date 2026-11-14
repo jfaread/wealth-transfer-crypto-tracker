@@ -1,16 +1,17 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "crypto-watch-cloudflare",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Private connection to Cloudflare's official API MCP server for the Crypto-Watch phone alert backend.",
   "author": {"name": "James Read"},
   "repository": "https://github.com/jfaread/wealth-transfer-crypto-tracker",
   "extensions": {
     "com.openai": {
+      "apps": "./.app.json",
       "interface": {
         "displayName": "Crypto-Watch Cloudflare",
         "shortDescription": "Private Cloudflare connection",
-        "longDescription": "Connect to Cloudflare's official hosted API MCP server through Cloudflare OAuth. This private connection supports preparing and maintaining the crypto-watch-alerts backend for jfaread/wealth-transfer-crypto-tracker. Cloudflare controls account selection and granted permissions. Its API tools can access the resources covered by that grant; the plugin itself does not create an additional technical account or project boundary. Keep work limited to the authorised Crypto-Watch backend, verify Workers Free before deployment, preserve existing notification keys and the shared GitHub Pages address, and leave other projects unchanged. Creating this plugin does not authenticate the account, deploy a Worker or activate phone notifications.",
+        "longDescription": "Use the registered Crypto-Watch Cloudflare Connection to access Cloudflare's official hosted API MCP server through OAuth. This private plugin supports preparing and maintaining the crypto-watch-alerts backend for jfaread/wealth-transfer-crypto-tracker. Cloudflare controls account selection and granted permissions. Its API tools can access the resources covered by that grant; the plugin itself does not create an additional technical account or project boundary. Keep work limited to the authorised Crypto-Watch backend, verify Workers Free before deployment, preserve existing notification keys and the shared GitHub Pages address, and leave other projects unchanged. Updating this plugin does not authenticate the account, deploy a Worker or activate phone notifications.",
         "developerName": "James Read",
         "category": "Developer Tools",
         "capabilities": [],

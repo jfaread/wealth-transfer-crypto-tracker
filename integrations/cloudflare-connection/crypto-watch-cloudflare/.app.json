@@ -1,0 +1,8 @@
+{
+  "apps": {
+    "crypto-watch-cloudflare-connection": {
+      "id": "asdk_app_6af7aa86d9f88191aabe2560c9f126e6",
+      "required": true
+    }
+  }
+}
