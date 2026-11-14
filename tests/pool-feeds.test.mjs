@@ -37,8 +37,8 @@ function fixture({time = NOW, number = 256, previous = [], change, pools = {}, a
   const current = block(number, time);
   const old = new Map(previous.map(header => [header.number, header]));
   const fetchImpl = async (url, options) => {
-    const network = url === 'https://ethereum-rpc.publicnode.com' ? 'ethereum'
-      : url === 'https://bsc-rpc.publicnode.com' ? 'bsc' : assert.fail('Unexpected RPC endpoint.');
+    const network = url === 'https://eth.drpc.org' ? 'ethereum'
+      : url === 'https://bsc-dataseed.bnbchain.org' ? 'bsc' : assert.fail('Unexpected RPC endpoint.');
     assert.equal(options.method, 'POST'); assert.equal(options.redirect, 'manual');
     assert(options.signal instanceof AbortSignal);
     assert.equal(options.headers.Authorization, undefined);
@@ -165,10 +165,10 @@ test('a slower parallel chain cannot return another chain’s already-expired co
   const gate = new Promise(resolve => { releaseBsc = resolve; });
   const base = fixture();
   const mock = {fetchImpl: async (url, options) => {
-    if (url === 'https://bsc-rpc.publicnode.com') await gate;
+    if (url === 'https://bsc-dataseed.bnbchain.org') await gate;
     const result = await base.fetchImpl(url, options);
     const calls = JSON.parse(options.body);
-    if (url === 'https://ethereum-rpc.publicnode.com' && calls[0].method === 'eth_getBlockByNumber'
+    if (url === 'https://eth.drpc.org' && calls[0].method === 'eth_getBlockByNumber'
         && calls[0].params[0] !== 'latest') setImmediate(() => { clock += 2000; releaseBsc(); });
     return result;
   }};

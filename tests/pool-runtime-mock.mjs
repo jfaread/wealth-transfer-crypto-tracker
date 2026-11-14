@@ -59,8 +59,8 @@ export default {
       server.addEventListener('close', () => sockets.delete(server));
       return new Response(null, {status: 101, webSocket: client});
     }
-    const network = url.href === 'https://ethereum-rpc.publicnode.com/' ? 'ethereum'
-      : url.href === 'https://bsc-rpc.publicnode.com/' ? 'bsc' : null;
+    const network = url.href === 'https://eth.drpc.org/' ? 'ethereum'
+      : url.href === 'https://bsc-dataseed.bnbchain.org/' ? 'bsc' : null;
     if (network && request.method === 'POST' && !request.headers.has('Authorization')) {
       rpcCount++;
       headers[network] ||= {number: '0x100', timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16), hash: '0x' + (network === 'ethereum' ? '1' : '2').repeat(64)};

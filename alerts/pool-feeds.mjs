@@ -11,12 +11,12 @@ export const POOL_SOURCES = Object.freeze({
 
 const NETWORKS = Object.freeze({
   ethereum: Object.freeze({
-    endpoint: 'https://ethereum-rpc.publicnode.com', chainId: 1,
+    endpoint: 'https://eth.drpc.org', chainId: 1,
     factory: '0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f',
     quoteToken: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', conversionCoin: 'ETH',
   }),
   bsc: Object.freeze({
-    endpoint: 'https://bsc-rpc.publicnode.com', chainId: 56,
+    endpoint: 'https://bsc-dataseed.bnbchain.org', chainId: 56,
     factory: '0xca143ce32fe78f1f7019d7d551a6402fc5350c73',
     quoteToken: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c', conversionCoin: 'BNB',
   }),
