@@ -257,7 +257,14 @@ async function getPreparedSnapshot(force=false){
  return snapshotRequest;
 }
 function showSnapshotStatus(bundle){
- if(bundle.spec.quoteCheckedAt){setStatus('ready','Quotes updated · '+dateText(bundle.spec.end)+' '+zoneLabel());const old=Date.now()-bundle.spec.historySavedAt>7200000;$('warning').hidden=!old;$('warning').textContent=old?'Current prices updated. History provider is delayed (last history: '+dateText(bundle.spec.historySavedAt)+' '+zoneLabel()+'). Refresh prices retries history automatically.':'';return;}
+ if(bundle.spec.quoteCheckedAt){
+  const available=new Map(bundle.data),times=state.coins.map(id=>available.get(id)?.points.at(-1)?.t);
+  const observedAt=times.length&&times.every(Number.isSafeInteger)?Math.min(...times):null,now=Date.now();
+  const fresh=observedAt!==null&&observedAt<=now+300000&&now-observedAt<=1800000;
+  setStatus(fresh?'ready':'failed',(fresh?'Quotes updated':'Older quotes')+' · '+dateText(observedAt??bundle.spec.end)+' '+zoneLabel());
+  if(!fresh){$('warning').hidden=false;$('warning').textContent='These saved quotes are no longer current. Refresh prices checks for quotes from the last 30 minutes.';return;}
+  const old=now-bundle.spec.historySavedAt>7200000;$('warning').hidden=!old;$('warning').textContent=old?'Current prices updated. History provider is delayed (last history: '+dateText(bundle.spec.historySavedAt)+' '+zoneLabel()+'). Refresh prices retries history automatically.':'';return;
+ }
  const age=Date.now()-bundle.savedAt;
  setStatus(age>7200000?'failed':'ready',(age>7200000?'Older snapshot':'Price snapshot')+' · '+dateText(bundle.spec.end)+' '+zoneLabel());
  $('warning').hidden=age<=7200000;$('warning').textContent=age>7200000?'Historical prices were last updated '+dateText(bundle.savedAt)+' '+zoneLabel()+'. Refresh prices checks current quotes; gaps in older history are not filled in.':'';
@@ -265,20 +272,48 @@ function showSnapshotStatus(bundle){
 async function repairChartHistory(bundle,wanted,signal){
  const age=Date.now()-(bundle.spec.historySavedAt||bundle.savedAt);
  if(age<=7200000)return bundle;
- setStatus('loading','Updating chart history…');
- const end=Date.now(),step=bundle.spec.step,window=rangeSpec(bundle.spec.range,end);
- const spec={...bundle.spec,...window,step,interval:bundle.spec.interval,start:Math.floor(window.start/step)*step,source:bundle.spec.source,saved:false};
- // Keep existing verified history unless every selected series passes validation.
- const results=await Promise.all(wanted.map(id=>fetchAggregate(id,spec,signal,true)));
- const now=Date.now(),next={spec:{...spec,historySavedAt:now},data:results.map(d=>[d.id,d]),savedAt:now};
- if(!validBundle(next))throw Error('Updated history failed validation.');
- bundles.set(spec.range,next);storageWrite('range:'+spec.range,next);return next;
+ if(signal.aborted)throw new DOMException('Cancelled','AbortError');
+ const historyController=new AbortController(),cancelHistory=()=>historyController.abort();
+ signal.addEventListener('abort',cancelHistory,{once:true});
+ // Optional history work gets one shared budget, not a fresh timeout per coin.
+ const timer=setTimeout(cancelHistory,15000),historySignal=historyController.signal;
+ try{
+  const end=Date.now(),step=bundle.spec.step,window=rangeSpec(bundle.spec.range,end);
+  const {quoteCheckedAt,...previousSpec}=bundle.spec;
+  const spec={...previousSpec,...window,step,interval:bundle.spec.interval,start:Math.floor(window.start/step)*step,source:bundle.spec.source,saved:false};
+  // Keep existing verified history unless every selected series passes validation.
+  // Stop on the first failure so an unavailable source is not hit eight times.
+  const results=[];
+  for(const id of wanted){if(historySignal.aborted)throw new DOMException('Cancelled','AbortError');results.push(await fetchAggregate(id,spec,historySignal,true));}
+  if(historySignal.aborted)throw new DOMException('Cancelled','AbortError');
+  const now=Date.now(),next={spec:{...spec,historySavedAt:now},data:results.map(d=>[d.id,d]),savedAt:now};
+  if(!validBundle(next))throw Error('Updated history failed validation.');
+  return next;
+ }finally{clearTimeout(timer);signal.removeEventListener('abort',cancelHistory);}
 }
-async function refreshCurrentQuotes(bundle,wanted,signal){
- const q=new URLSearchParams({ids:wanted.map(id=>CG_IDS[id]).join(','),vs_currencies:'usd',include_last_updated_at:'true',precision:'full'});
- let raw;try{raw=await requestJSON('https://api.coingecko.com/api/v3/simple/price?'+q,signal,8000);}catch(e){if(signal.aborted)throw e;const fallback=await requestJSON(new URL('./data/quotes.json',location.href).href,signal,4000,'reload');if(fallback?.version!==1||!fallback.quotes)throw e;raw=fallback.quotes;}
- const now=Date.now(),quotes=new Map();
+function validCurrentQuotes(raw,wanted,now=Date.now()){
+ const quotes=new Map();
  for(const id of wanted){const value=raw?.[CG_IDS[id]],p=value?.usd,t=value?.last_updated_at*1000;if(typeof p!=='number'||!Number.isFinite(p)||p<=0||!Number.isSafeInteger(t)||t>now+300000||now-t>1800000)throw Error('A current, timestamped quote was not returned for '+id+'.');quotes.set(id,{t,p});}
+ return quotes;
+}
+async function fetchCurrentQuotes(wanted,signal){
+ const q=new URLSearchParams({ids:wanted.map(id=>CG_IDS[id]).join(','),vs_currencies:'usd',include_last_updated_at:'true',precision:'full'});
+ let quotes;
+ try{
+  const raw=await requestJSON('https://api.coingecko.com/api/v3/simple/price?'+q,signal,8000);
+  // A successful HTTP response can still contain stale or incomplete prices.
+  // Validate the complete selection before accepting this source.
+  quotes=validCurrentQuotes(raw,wanted);
+ }catch(e){
+  if(signal.aborted)throw e;
+  const fallback=await requestJSON(new URL('./data/quotes.json',location.href).href,signal,4000,'reload');
+  if(fallback?.version!==1||!fallback.quotes)throw e;
+  quotes=validCurrentQuotes(fallback.quotes,wanted);
+ }
+ return quotes;
+}
+function applyCurrentQuotes(bundle,quotes){
+ const now=Date.now();
  const end=Math.max(bundle.spec.end,...[...quotes.values()].map(x=>x.t)),step=bundle.spec.step,range=bundle.spec.range;
  const desired=range==='1D'?end-86400000:range==='5D'?end-5*86400000:range==='1M'?calendarSubtract(end,1):range==='6M'?calendarSubtract(end,6):range==='1Y'?calendarSubtract(end,12):Date.UTC(new Date(end).getUTCFullYear(),0,1);
  const start=Math.floor(desired/step)*step,data=[];
@@ -305,7 +340,7 @@ async function load(force=false){
   // Draw the embedded/local chart before any request; never wait for a remote clock or eight providers.
   if(hasFallback)showSnapshotStatus(cached);
   setBusy(force||!hasFallback);if(force)setStatus('loading','Checking prices…');
-  let fallbackBundle=hasFallback?cached:null;
+  let fallbackBundle=hasFallback?cached:null,quotesReceived=false;
   if(!hasFallback)setStatus('loading','Loading the shared price snapshot…');
   try{
    if(range==='5Y')throw Error('Free history for KISHU, WKC and CREPE covers up to one year. Deselect those tokens for the original five coins’ five-year chart.');
@@ -315,12 +350,29 @@ async function load(force=false){
     return;
    }
    let b=fallbackBundle;
-   try{const snapshot=await getPreparedSnapshot(force);if(run!==serial||signal.aborted)return;const candidate=snapshot.ranges[range];if(candidate&&(!b||candidate.savedAt>b.savedAt))b=candidate;}catch(e){if(signal.aborted||!b)throw e;}
-   if(!b||!wanted.every(id=>b.data.some(([key])=>key===id))||!showBundle(b,false))throw Error('This period is not available for every selected token. Choose a shorter period.');
-   fallbackBundle=b;
-   if(force){try{b=await repairChartHistory(b,wanted,signal);}catch(e){if(signal.aborted)throw e;}setStatus('loading','Checking current quotes…');b=await refreshCurrentQuotes(b,wanted,signal);if(run!==serial||signal.aborted)return;showBundle(b,false);fallbackBundle=b;}
+   try{const snapshot=await getPreparedSnapshot(force);if(run!==serial||signal.aborted)return;const candidate=snapshot.ranges[range];if(candidate&&(!b||candidate.savedAt>b.savedAt||(force&&(candidate.spec.historySavedAt||candidate.savedAt)>(b.spec.historySavedAt||b.savedAt))))b=candidate;}catch(e){if(signal.aborted||!b)throw e;}
+   // A newer history snapshot may still end before locally refreshed quotes.
+   // Keep those displayed until verified quotes can be applied to the new history.
+   const keepQuotedFallback=force&&fallbackBundle?.spec.quoteCheckedAt&&fallbackBundle.spec.end>b?.spec.end;
+   if(!b||!wanted.every(id=>b.data.some(([key])=>key===id))||(!keepQuotedFallback&&!showBundle(b,false)))throw Error('This period is not available for every selected token. Choose a shorter period.');
+   if(!keepQuotedFallback)fallbackBundle=b;
+   if(force){
+    // Current prices take priority over optional historical-provider requests.
+    setStatus('loading','Checking current quotes…');
+    const quotes=await fetchCurrentQuotes(wanted,signal);
+    if(run!==serial||signal.aborted)return;
+    quotesReceived=true;let applied=false,applicationError;
+    try{b=applyCurrentQuotes(b,quotes);showBundle(b,false);fallbackBundle=b;showSnapshotStatus(b);applied=true;}catch(e){applicationError=e;}
+    if(!applied)setStatus('loading','Updating chart history…');
+    try{
+     const repaired=await repairChartHistory(b,wanted,signal);
+     if(run!==serial||signal.aborted)return;
+     if(repaired!==b){b=applyCurrentQuotes(repaired,quotes);showBundle(b,false);fallbackBundle=b;applied=true;}
+    }catch(e){if(signal.aborted)throw e;if(!applied)throw applicationError||e;}
+    if(!applied)throw applicationError;
+   }
    showSnapshotStatus(b);
-  }catch(e){if(run!==serial||signal.aborted)return;state.errors=[e.message];if(fallbackBundle){showBundle(fallbackBundle,false);showSnapshotStatus(fallbackBundle);$('warning').hidden=false;$('warning').textContent='Current quotes could not be checked. '+e.message+' The existing chart is still available.';}else{setStatus('failed','Snapshot unavailable');$('overlay-title').textContent='This period could not be loaded';$('overlay-body').textContent=e.message+' Try Refresh prices.';$('dates').textContent='No other period has been substituted.';}}
+  }catch(e){if(run!==serial||signal.aborted)return;state.errors=[e.message];if(fallbackBundle){showBundle(fallbackBundle,false);showSnapshotStatus(fallbackBundle);$('warning').hidden=false;$('warning').textContent=(quotesReceived?'Current quotes were received, but could not be added to this period. ':'Current quotes could not be checked. ')+e.message+' The existing chart is still available.';}else{setStatus('failed','Snapshot unavailable');$('overlay-title').textContent='This period could not be loaded';$('overlay-body').textContent=e.message+' Try Refresh prices.';$('dates').textContent='No other period has been substituted.';}}
   finally{if(run===serial){setBusy(false);lastPricesCheck=Date.now();}}
   return;
  }
