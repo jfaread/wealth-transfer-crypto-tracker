@@ -125,7 +125,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
   await test.page.locator('#refresh').click();await waitForRefresh(test.page);await test.page.getByText(/^Quotes updated ·/).waitFor();
   const current=await test.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
   assert.equal(test.calls.quote,1);assert.equal(test.calls.cache,1);assert.equal(current.series.length,CHART_COINS.length);
-  assert.equal(current.series.find(x=>x.id==='BTC').last.p,cachedQuotes.bitcoin.usd,'Fresh fallback quote must replace invalid primary values');
+  assert.equal(current.series.find(x=>x.id==='BTC').last.p,primary==='stale'?cachedQuotes.bitcoin.usd:quoteResponse.bitcoin.usd,'Keep valid primary observations while filling only missing or older entries from cache');
   assert.equal(current.errors.length,0);await test.page.close();
  }
  // Two stale quote sets retain the original dated chart, then allow an immediate retry.

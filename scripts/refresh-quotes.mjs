@@ -1,10 +1,11 @@
 import {mkdir,writeFile,readFile,rename} from 'node:fs/promises';
-import {COINS,mergeQuotes,createClient} from './market-data-core.mjs';
+import {COINS,mergeQuotes} from './market-data-core.mjs';
+import {createMarketClient} from './market-client.mjs';
 await mkdir('data',{recursive:true});let previous={};
 try{const old=JSON.parse(await readFile('data/quotes.json','utf8'));if(old.version===1)previous=old;}catch{}
 const query=new URLSearchParams({ids:Object.values(COINS).join(','),vs_currencies:'usd',include_last_updated_at:'true',precision:'full'});
 let incoming={},received=false;
-try{incoming=await createClient()('https://api.coingecko.com/api/v3/simple/price?'+query);received=true;}catch(e){console.warn('Current quote refresh unavailable; retaining validated provider timestamps:',e.message);}
+try{incoming=await (await createMarketClient())('https://api.coingecko.com/api/v3/simple/price?'+query);received=true;}catch(e){console.warn('Current quote refresh unavailable; retaining validated provider timestamps:',e.message);}
 const now=Date.now(),quotes=mergeQuotes(previous.quotes,incoming,now),missing=Object.entries(COINS).filter(([,id])=>!quotes[id]).map(([symbol])=>symbol);
 if(!received&&JSON.stringify(quotes)===JSON.stringify(previous.quotes)){
  console.log('No newer quotes; the existing check time and data remain unchanged.');

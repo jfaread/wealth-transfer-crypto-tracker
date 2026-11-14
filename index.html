@@ -264,13 +264,24 @@ function showBundle(b,saved=true){
  renderMetrics();render();return true;
 }
 function savedWarning(reason){$('warning').hidden=false;$('warning').textContent=reason+' Showing a saved '+RANGES[state.range].label.toLowerCase()+' period ending '+dateText(state.spec.end)+' '+zoneLabel()+'. This is not a live update.';setStatus('failed','Saved data · '+state.spec.source+' · '+dateText(state.spec.end)+' '+zoneLabel());}
+// A later cache-write time cannot roll a selected coin's observation backwards.
+function preferPreparedBundle(candidate,current,selected=ids){
+ if(!validBundle(candidate))return false;
+ if(!validBundle(current))return true;
+ if(candidate.spec.range!==current.spec.range||candidate.savedAt<=current.savedAt)return false;
+ const before=new Map(current.data),after=new Map(candidate.data);
+ return selected.filter(id=>before.has(id)).every(id=>after.has(id)&&after.get(id).points.at(-1).t>=before.get(id).points.at(-1).t);
+}
 let snapshotRequest=null,snapshotValue=null,snapshotCheckedAt=0;
 async function getPreparedSnapshot(force=false){
  if(snapshotRequest)return snapshotRequest;
  if(!force&&snapshotValue)return snapshotValue;
  snapshotRequest=requestJSON(new URL('./data/ranges.json',location.href).href,undefined,4000,force?'reload':'default').then(value=>{
   if(value?.version!==1||!Number.isFinite(value.updatedAt)||value.updatedAt>Date.now()+300000||Date.now()-value.updatedAt>2*86400000||!value.ranges)throw Error('The shared price snapshot is unavailable or too old.');
-  for(const [range,bundle]of Object.entries(value.ranges)){if(!validBundle(bundle)||bundle.spec.range!==range)throw Error('Invalid shared chart history.');if(!bundles.has(range)||bundles.get(range).savedAt<bundle.savedAt){bundles.set(range,bundle);storageWrite('range:'+range,bundle);}}
+  const entries=Object.entries(value.ranges);
+  // Validate the complete payload before changing any in-memory or saved range.
+  if(!entries.length||entries.some(([range,bundle])=>!validBundle(bundle)||bundle.spec.range!==range))throw Error('Invalid shared chart history.');
+  for(const [range,bundle]of entries){if(preferPreparedBundle(bundle,bundles.get(range))){bundles.set(range,bundle);storageWrite('range:'+range,bundle);}}
   snapshotValue=value;snapshotCheckedAt=Date.now();return value;
  }).finally(()=>{snapshotRequest=null;});
  return snapshotRequest;
@@ -284,9 +295,11 @@ function showSnapshotStatus(bundle){
   if(!fresh){$('warning').hidden=false;$('warning').textContent='These saved quotes are no longer current. Refresh prices checks for quotes from the last 30 minutes.';return;}
   const delayed=state.coins.filter(id=>now-(available.get(id)?.historySavedAt||bundle.spec.historySavedAt)>7200000);const old=delayed.length>0;$('warning').hidden=!old;$('warning').textContent=old?'Current prices updated. Chart history is delayed for '+delayed.join(', ')+'. Successful history repairs are kept; missing observations remain gaps. Refresh prices retries the remaining history.':'';return;
  }
- const age=Date.now()-bundle.savedAt;
+ const visible=new Map(bundle.data),observations=state.coins.map(id=>visible.get(id)?.points.at(-1)?.t);
+ const oldestObservation=observations.every(Number.isSafeInteger)?Math.min(...observations):0;
+ const age=Date.now()-oldestObservation;
  setStatus(age>7200000?'failed':'ready',(age>7200000?'Older snapshot':'Price snapshot')+' · '+dateText(bundle.spec.end)+' '+zoneLabel());
- $('warning').hidden=age<=7200000;$('warning').textContent=age>7200000?'Historical prices were last updated '+dateText(bundle.savedAt)+' '+zoneLabel()+'. Refresh prices checks current quotes; gaps in older history are not filled in.':'';
+ $('warning').hidden=age<=7200000;$('warning').textContent=age>7200000?'Historical observations are available through '+dateText(oldestObservation)+' '+zoneLabel()+'. Refresh prices checks current quotes; gaps in older history are not filled in.':'';
 }
 async function repairChartHistory(bundle,wanted,signal){
  const ageOf=d=>d.historySavedAt||bundle.spec.historySavedAt||bundle.savedAt;
@@ -322,19 +335,17 @@ function validCurrentQuotes(raw,wanted,now=Date.now()){
 }
 async function fetchCurrentQuotes(wanted,signal){
  const q=new URLSearchParams({ids:wanted.map(id=>CG_IDS[id]).join(','),vs_currencies:'usd',include_last_updated_at:'true',precision:'full'});
- let quotes;
- try{
-  const raw=await requestJSON('https://api.coingecko.com/api/v3/simple/price?'+q,signal,8000);
-  // A successful HTTP response can still contain stale or incomplete prices.
-  // Validate the complete selection before accepting this source.
-  quotes=validCurrentQuotes(raw,wanted);
- }catch(e){
-  if(signal.aborted)throw e;
-  const fallback=await requestJSON(new URL('./data/quotes.json',location.href).href,signal,4000,'reload');
-  if(fallback?.version!==1||!fallback.quotes)throw e;
-  quotes=validCurrentQuotes(fallback.quotes,wanted);
+ const combined={},merge=raw=>{for(const id of wanted){const key=CG_IDS[id];try{validCurrentQuotes(raw,[id]);const value=raw[key];if(!combined[key]||value.last_updated_at>combined[key].last_updated_at)combined[key]=value;}catch{}}};
+ let primaryError;
+ try{merge(await requestJSON('https://api.coingecko.com/api/v3/simple/price?'+q,signal,8000));}
+ catch(e){if(signal.aborted)throw e;primaryError=e;}
+ if(wanted.some(id=>!combined[CG_IDS[id]])){
+  try{const fallback=await requestJSON(new URL('./data/quotes.json',location.href).href,signal,4000,'reload');if(fallback?.version!==1||!fallback.quotes)throw Error('Invalid quote cache');merge(fallback.quotes);}
+  catch(e){if(signal.aborted)throw e;primaryError=primaryError||e;}
  }
- return quotes;
+ if(signal.aborted)throw new DOMException('Cancelled','AbortError');
+ try{return validCurrentQuotes(combined,wanted);}
+ catch{throw Error('Fresh quotes unavailable for '+wanted.filter(id=>!combined[CG_IDS[id]]).join(', ')+'. '+(primaryError?.message||'The last verified chart is retained.'));}
 }
 function applyCurrentQuotes(bundle,quotes){
  const now=Date.now();
@@ -370,14 +381,14 @@ async function load(force=false){
    if(range==='5Y')throw Error('Free history for Kishu Inu, Wiki Cat and CREPE covers up to one year. Deselect those tokens for five-year charts of Bitcoin, Ethereum, BNB, XRP, Solana and Shiba Inu.');
    if(!force&&hasFallback&&Date.now()-cached.savedAt<7200000){
     // Check for a newer deployment after the first paint, without blocking chart interaction.
-    getPreparedSnapshot().then(snapshot=>{if(run!==serial||state.range!==range)return;const b=snapshot.ranges[range];if(b&&b.savedAt>cached.savedAt&&showBundle(b,false))showSnapshotStatus(b);}).catch(()=>{});
+    getPreparedSnapshot().then(snapshot=>{if(run!==serial||state.range!==range)return;const b=snapshot.ranges[range];if(preferPreparedBundle(b,cached,wanted)&&showBundle(b,false))showSnapshotStatus(b);}).catch(()=>{});
     return;
    }
    let b=fallbackBundle;
    try{const snapshot=await getPreparedSnapshot(force);if(run!==serial||signal.aborted)return;const candidate=snapshot.ranges[range];if(candidate&&(!b||candidate.savedAt>b.savedAt||(force&&(candidate.spec.historySavedAt||candidate.savedAt)>(b.spec.historySavedAt||b.savedAt))))b=candidate;}catch(e){if(signal.aborted||!b)throw e;}
    // A newer history snapshot may still end before locally refreshed quotes.
    // Keep those displayed until verified quotes can be applied to the new history.
-   const keepQuotedFallback=force&&fallbackBundle?.spec.quoteCheckedAt&&fallbackBundle.spec.end>b?.spec.end;
+   const keepQuotedFallback=force&&fallbackBundle&&b!==fallbackBundle&&!preferPreparedBundle(b,fallbackBundle,wanted);
    if(!b||!wanted.every(id=>b.data.some(([key])=>key===id))||(!keepQuotedFallback&&!showBundle(b,false)))throw Error('This period is not available for every selected token. Choose a shorter period.');
    if(!keepQuotedFallback)fallbackBundle=b;
    if(force){
@@ -385,7 +396,9 @@ async function load(force=false){
     setStatus('loading','Checking current quotes…');
     const quotes=await fetchCurrentQuotes(wanted,signal);
     if(run!==serial||signal.aborted)return;
-    quotesReceived=true;let applied=false,applicationError;
+    quotesReceived=true;
+    for(const [id,d]of fallbackBundle?.data||[]){const last=d.points.at(-1),incoming=quotes.get(id);if(incoming&&last.t>incoming.t&&last.t<=Date.now()+300000&&Date.now()-last.t<=1800000)quotes.set(id,{t:last.t,p:last.p});}
+    let applied=false,applicationError;
     try{b=applyCurrentQuotes(b,quotes);showBundle(b,false);fallbackBundle=b;showSnapshotStatus(b);applied=true;}catch(e){applicationError=e;}
     if(!applied)setStatus('loading','Updating chart history…');
     try{

@@ -1,0 +1,14 @@
+import {readFile} from 'node:fs/promises';
+import {validateSnapshot,COIN_IDS} from './build-site.mjs';
+const snapshot=JSON.parse(await readFile('_site/data/ranges.json','utf8'));
+validateSnapshot(snapshot);
+const html=await readFile('_site/index.html','utf8');
+const match=html.match(/<script id="wtct-bootstrap" type="application\/json">([\s\S]*?)<\/script>/);
+if(!match)throw Error('Missing embedded chart');
+const bootstrap=JSON.parse(match[1]);
+if(JSON.stringify(bootstrap.ranges?.['1D'])!==JSON.stringify(snapshot.ranges['1D']))throw Error('Embedded and shared chart data differ');
+const health=JSON.parse(await readFile('_site/data/feed-health.json','utf8'));
+if(health.version!==1||!Number.isSafeInteger(health.checkedAt)||health.checkedAt>Date.now()+300000)throw Error('Invalid feed health report');
+for(const [id,d]of snapshot.ranges['1D'].data)if(health.coins?.[id]?.historyObservedAt!==d.points.at(-1).t)throw Error('Feed health misstates '+id+' observations');
+console.log('Publication safety gate passed: '+COIN_IDS.length+' exact assets, '+Object.keys(snapshot.ranges).length+' complete periods, matching embedded chart and timestamped feed health.');
+console.log(JSON.stringify({status:health.status,checkedAt:new Date(health.checkedAt).toISOString(),observedThrough:new Date(snapshot.asOf).toISOString()}));

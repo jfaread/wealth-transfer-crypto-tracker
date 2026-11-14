@@ -1,7 +1,8 @@
 import {mkdir,writeFile,readFile,rename} from 'node:fs/promises';
-import {COINS,HOUR,validPrices,reusableWindow,acceptWindow,createClient} from './market-data-core.mjs';
+import {COINS,HOUR,validPrices,reusableWindow,acceptWindow} from './market-data-core.mjs';
+import {createMarketClient} from './market-client.mjs';
 await mkdir('data',{recursive:true});
-const outputs=new Map(),failures=[],get=createClient();
+const outputs=new Map(),failures=[],get=await createMarketClient();
 for(const [symbol,id]of Object.entries(COINS)){
  let item;try{item=JSON.parse(await readFile(`data/${symbol}.json`,'utf8'));if(item.symbol!==symbol||item.id!==id)throw Error('Wrong token');for(const days of [31,365])validPrices(item.prices?.[days]);}catch{item={symbol,id,updatedAt:0,prices:{}};}
  outputs.set(symbol,item);

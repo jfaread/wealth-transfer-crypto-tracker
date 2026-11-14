@@ -40,29 +40,85 @@ export function acceptWindow(item,days,prices,now=Date.now()){
  const merged=[...prefix,...prices];validPrices(merged,now);
  return {...item,prices:{...item.prices,[days]:merged},windowUpdatedAt,updatedAt:windowUpdatedAt[31]};
 }
-export function retryAt(value,now){
- if(!value)return now+60000;
- const n=Number(value),delay=Number.isFinite(n)?n*1000:Date.parse(value)-now;
- return now+Math.max(60000,Number.isFinite(delay)?delay:60000);
+// Only public provider timing metadata is persisted. No credentials or prices.
+export function providerState(value={}){
+ const state={version:1,lastRequestAt:0,cooldownUntil:0,failures:0};
+ if(value.version!==undefined&&value.version!==1)throw Error('Unsupported provider state');
+ for(const key of ['lastRequestAt','cooldownUntil','failures']){
+  const n=value[key]??0;
+  if(!Number.isSafeInteger(n)||n<0||n>(key==='failures'?16:8640000000000000))throw Error('Invalid provider state');
+  state[key]=n;
+ }
+ return state;
 }
-export function createClient({fetchImpl=fetch,now=()=>Date.now(),sleep=ms=>new Promise(r=>setTimeout(r,ms)),spacing=15000}={}){
- let last=-Infinity,cooldown=0;
- return async function get(url){
-  if(new URL(url).origin!=='https://api.coingecko.com')throw Error('Unexpected provider');
-  for(let attempt=0;attempt<2;attempt++){
-   if(now()<cooldown){const e=Error('Provider cooldown is active');e.status=429;e.retryAt=cooldown;throw e;}
-   await sleep(Math.max(0,spacing-(now()-last)));last=now();
-   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
-   try{
-    const r=await fetchImpl(url,{headers:{Accept:'application/json'},redirect:'error',signal:controller.signal});
-    if(r.status===429||(r.status===503&&r.headers.get('Retry-After'))){cooldown=retryAt(r.headers.get('Retry-After'),now());await r.body?.cancel();const e=Error('Provider requested a cooldown');e.status=r.status;e.retryAt=cooldown;throw e;}
-    if(!r.ok){await r.body?.cancel();const e=Error('Provider returned HTTP '+r.status);e.status=r.status;throw e;}
-    if(!/application\/(?:[\w.+-]+\+)?json/i.test(r.headers.get('Content-Type')||''))throw Error('Unexpected response type');
-    const reader=r.body.getReader(),decoder=new TextDecoder('utf-8',{fatal:true});let text='',bytes=0;
-    try{for(;;){const part=await reader.read();if(part.done)break;bytes+=part.value.byteLength;if(bytes>2000000){controller.abort();await reader.cancel();throw Error('Response too large');}text+=decoder.decode(part.value,{stream:true});}text+=decoder.decode();}finally{reader.releaseLock();}
-    return JSON.parse(text);
-   }catch(e){if(attempt===1||e.retryAt||e.status&&e.status<500)throw e;}
-   finally{clearTimeout(timer);}
+export function retryAt(value,now){
+ const n=typeof value==='string'&&/^\d+(?:\.\d+)?$/.test(value.trim())?Number(value):NaN;
+ const target=Number.isFinite(n)?now+Math.ceil(n*1000):Date.parse(value||'');
+ // Invalid headers never remove the minimum pause. Long valid pauses are not shortened.
+ return Math.max(now+60000,Number.isSafeInteger(target)&&target<=8640000000000000?target:now+60000);
+}
+function error(message,properties={}){return Object.assign(new Error(message),properties);}
+function cancel(response,reader){try{Promise.resolve(reader?reader.cancel():response?.body?.cancel()).catch(()=>{});}catch{}}
+async function request(url,{fetchImpl,timeoutMs,maxBytes}){
+ const controller=new AbortController();let response,reader,timer,expired=false;
+ const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{expired=true;controller.abort();cancel(response,reader);reject(error('Provider request timed out',{transient:true}));},timeoutMs);});
+ const work=(async()=>{
+  response=await fetchImpl(url,{headers:{Accept:'application/json'},redirect:'error',signal:controller.signal});
+  if(expired){cancel(response);throw error('Provider request timed out',{transient:true});}
+  if(response.redirected||response.status>=300&&response.status<400)throw error('Provider redirect rejected');
+  if(!response.ok){
+   const retryAfter=response.headers?.get('Retry-After');
+   throw error('Provider returned HTTP '+response.status,{status:response.status,transient:response.status>=500||response.status===408,
+    ...(response.status===429||response.status===503&&retryAfter?{rateLimited:true,retryAfter}:{} )});
   }
- };
+  if(!/^application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/i.test(response.headers.get('Content-Type')||''))throw error('Unexpected response type');
+  const declared=Number(response.headers.get('Content-Length'));
+  if(Number.isFinite(declared)&&declared>maxBytes)throw error('Response too large');
+  if(!response.body?.getReader)throw error('Missing provider response');
+  reader=response.body.getReader();const decoder=new TextDecoder('utf-8',{fatal:true});let text='',bytes=0;
+  try{
+   for(;;){const part=await reader.read();if(expired)throw error('Provider request timed out',{transient:true});if(part.done)break;
+    bytes+=part.value.byteLength;if(bytes>maxBytes)throw error('Response too large');text+=decoder.decode(part.value,{stream:true});}
+   text+=decoder.decode();
+  }catch(e){if(e.transient||e.message==='Response too large')throw e;throw error('Unreadable provider response');}
+  let packet;try{packet=JSON.parse(text);}catch{throw error('Invalid provider JSON');}
+  if(!packet||typeof packet!=='object'||Array.isArray(packet)||Object.hasOwn(packet,'error'))throw error('Unexpected provider payload');
+  return packet;
+ })();
+ try{return await Promise.race([work,deadline]);}
+ catch(e){controller.abort();cancel(response,reader);if(e instanceof TypeError)throw error('Provider network failure',{transient:true});throw e;}
+ finally{clearTimeout(timer);try{reader?.releaseLock();}catch{}}
+}
+export function createClient({fetchImpl=fetch,now=()=>Date.now(),sleep=ms=>new Promise(r=>setTimeout(r,ms)),spacing=15000,
+ timeoutMs=15000,maxBytes=2000000,state={},saveState=async()=>{}}={}){
+ if(!Number.isFinite(spacing)||spacing<0||!Number.isFinite(timeoutMs)||timeoutMs<=0||!Number.isSafeInteger(maxBytes)||maxBytes<1)throw Error('Invalid provider request limits');
+ let current=providerState(state),queue=Promise.resolve();
+ const save=async next=>{await saveState({...next});current=next;};
+ async function run(input){
+  const url=new URL(input);
+  if(url.origin!=='https://api.coingecko.com'||url.username||url.password||url.hash)throw Error('Unexpected provider');
+  for(let attempt=0;attempt<2;attempt++){
+   if(now()<current.cooldownUntil)throw error('Provider cooldown is active',{status:429,retryAt:current.cooldownUntil});
+   const wait=Math.max(0,current.lastRequestAt?spacing-(now()-current.lastRequestAt):0);
+   if(wait>60000)throw error('Clock moved backwards; provider requests paused',{retryAt:current.lastRequestAt+spacing});
+   await sleep(wait);
+   // Persist the reservation BEFORE sending. Failed storage cannot bypass throttling.
+   await save({...current,lastRequestAt:now()});
+   let packet;
+   try{packet=await request(url.href,{fetchImpl,timeoutMs,maxBytes});}
+   catch(e){
+    if(e.rateLimited){const until=retryAt(e.retryAfter,now());await save({...current,cooldownUntil:Math.max(current.cooldownUntil,until)});
+     throw error('Provider requested a cooldown',{status:e.status,retryAt:current.cooldownUntil});}
+    if(!e.transient)throw e;
+    const failures=Math.min(16,current.failures+1),cooldownUntil=failures>=3?now()+Math.min(15*60000,60000*2**Math.min(4,failures-3)):current.cooldownUntil;
+    await save({...current,failures,cooldownUntil});
+    if(cooldownUntil>now())throw error('Provider temporarily unavailable; requests paused',{retryAt:cooldownUntil});
+    if(attempt===1)throw e;
+    continue;
+   }
+   await save({...current,failures:0,cooldownUntil:0});return packet;
+  }
+ }
+ // Parallel callers share one request lane, spacing and circuit-breaker state.
+ return input=>{const result=queue.then(()=>run(input));queue=result.catch(()=>{});return result;};
 }
