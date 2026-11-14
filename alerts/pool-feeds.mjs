@@ -31,7 +31,9 @@ const POOLS = Object.freeze({
 });
 const SELECTORS = Object.freeze({token0: '0x0dfe1681', token1: '0xd21220a7',
   reserves: '0x0902f1ac', factory: '0xc45a0155', decimals: '0x313ce567', getPair: '0xe6a43905'});
-const MAX_RESPONSE_BYTES = 64 * 1024;
+// Full block responses include transaction hashes, even with full transactions disabled.
+// Retain a hard bound, body cancellation and the existing eight-second deadline.
+const MAX_RESPONSE_BYTES = 1024 * 1024;
 const RPC_TIMEOUT_MS = 8_000;
 const FUTURE_TOLERANCE_MS = 5_000;
 const MAX_UINT112 = (1n << 112n) - 1n;

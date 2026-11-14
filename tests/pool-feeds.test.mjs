@@ -278,7 +278,7 @@ test('429 Retry-After seconds and HTTP dates are preserved without internal retr
 test('HTTP redirects and oversized streamed responses fail closed', async () => {
   for (const [make, reason] of [
     [() => new Response(null, {status: 302, headers: {Location: 'https://example.invalid/'}}), 'redirect_rejected'],
-    [() => new Response(' '.repeat(64 * 1024 + 1)), 'response_too_large'],
+    [() => new Response(' '.repeat(1024 * 1024 + 1)), 'response_too_large'],
   ]) {
     let calls = 0;
     const result = await poll({fetchImpl: async (_url, options) => {
@@ -365,5 +365,15 @@ test('out-of-order chunk responses retain exact pool identity and price', async 
   const mock=fixture({change:({results})=>[...results].reverse()});
   const result=await poll(mock,{coins:['KISHU']});
   assert.deepEqual(result.errors,[]);assert.equal(result.quotes[0].price,'0.000000000004');
+  assert.equal(result.evidence.KISHU.token,FIXTURES.KISHU.token);
+});
+
+test('genuine-sized block responses above 64 KiB retain complete header validation',async()=>{
+  const transactions=Array.from({length:1800},(_,i)=>hash(i+1));
+  assert(Buffer.byteLength(JSON.stringify(transactions))>64*1024);
+  const mock=fixture({change:({stage,results})=>stage===2?results:results.map(item=>item.result?.hash?{...item,result:{...item.result,transactions}}:item)});
+  const result=await poll(mock,{coins:['KISHU']});
+  assert.deepEqual(result.errors,[]);assert.equal(result.quotes.length,1);
+  assert.equal(result.evidence.KISHU.blockHash,mock.current.hash);
   assert.equal(result.evidence.KISHU.token,FIXTURES.KISHU.token);
 });
