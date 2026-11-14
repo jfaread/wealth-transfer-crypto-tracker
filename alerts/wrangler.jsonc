@@ -8,7 +8,7 @@
   "preview_urls": false,
   "observability": {"enabled": false},
   "vars": {
-    "ALERTS_ENABLED": "false",
+    "ALERTS_ENABLED": "true",
     "ALLOWED_ORIGIN": "https://jfaread.github.io",
     "PUBLIC_SITE_URL": "https://jfaread.github.io/wealth-transfer-crypto-tracker/",
     "MAX_DEVICES": "50",
