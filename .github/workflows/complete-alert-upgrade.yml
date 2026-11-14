@@ -17,97 +17,37 @@ jobs:
       WRANGLER_SEND_METRICS: 'false'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '26.13.1'
           cache: npm
       - run: npm ci --ignore-scripts
-      - name: Apply reviewed source changes with exact-context guards
+      - name: Apply the exact reviewed upgrade and complete closed-network fixtures
         run: |
           node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import {execFileSync} from 'node:child_process';
-          const expected={
-            'alerts/core.mjs':'80b57cfa05d4a7a8e1b015b2dfab51b80acd7c03',
-            'alerts/feeds.mjs':'af5cf1cbe4ed1a59bd1ab63228a12bfd13f838ae',
-            'alerts/rest-feed.mjs':'b620bfc096fe0cb80ac150803f10a019ccc87b8e',
-            'assets/alerts.js':'ee688992546f87e07bcb89812dccc861b0189ca8',
-            'index.html':'5b8fcdc9b1c7e0a0f4f0660f569161f406eadf79'
-          };
-          for(const [file,sha] of Object.entries(expected)) {
-            if(execFileSync('git',['hash-object',file],{encoding:'utf8'}).trim()!==sha)throw Error('Source changed; refusing to overwrite '+file);
-          }
-          function replace(file,from,to,expectedCount=1){
-            const text=fs.readFileSync(file,'utf8'),count=text.split(from).length-1;
-            if(count!==expectedCount)throw Error(file+': expected '+expectedCount+' exact matches, found '+count+' for '+from);
-            fs.writeFileSync(file,text.split(from).join(to));
-          }
-          replace('alerts/core.mjs',"  KISHU: Object.freeze", "  SHIB: Object.freeze({id:'SHIB', name:'Shiba Inu', geckoId:'shiba-inu', source:'Kraken SHIB/USD', pair:'SHIB/USD'}),\n  KISHU: Object.freeze");
-          replace('alerts/feeds.mjs',"'XRP/USD': 'XRP', 'SOL/USD': 'SOL',", "'XRP/USD': 'XRP', 'SOL/USD': 'SOL', 'SHIB/USD': 'SHIB',");
-          replace('alerts/feeds.mjs',"if (response.status === 429) {", "if (response.status === 429 || (response.status >= 500 && response.status <= 599)) {");
-          replace('alerts/feeds.mjs','use paced timestamped trades when its endpoint rate-limits.','use paced HTTPS trades when its endpoint rate-limits or returns a gateway error.');
-          replace('alerts/rest-feed.mjs',"['BTC', 'ETH', 'BNB', 'XRP', 'SOL']", "['BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'SHIB']");
-          replace('alerts/worker.mjs','The streaming feed is rate-limited.','The streaming feed is unavailable.');
-          replace('assets/alerts.js',"['SOL', 'Solana'], ['KISHU', 'Kishu Inu']", "['SOL', 'Solana'], ['SHIB', 'Shiba Inu'], ['KISHU', 'Kishu Inu']");
-          replace('index.html','Shiba Inu (SHIB) is available on the chart. SHIB phone alerts are not available yet.','Shiba Inu (SHIB) is supported by the background monitor. A fresh source and this device’s notification permission are required before an alert can be activated.');
-          replace('index.html','<option value="SOL">Solana (SOL)</option><option value="KISHU">','<option value="SOL">Solana (SOL)</option><option value="SHIB">Shiba Inu (SHIB)</option><option value="KISHU">');
-          replace('index.html','BTC, ETH, BNB, XRP and SOL use Kraken USD prices.','BTC, ETH, BNB, XRP, SOL and SHIB use Kraken USD prices. When streaming is unavailable, timestamped trades are checked about every 15 seconds.');
-          replace('tests/feeds.test.mjs','exactly five true-USD instruments','exactly six true-USD instruments');
-          replace('tests/feeds.test.mjs',"['BTC/USD', 'ETH/USD', 'BNB/USD', 'XRP/USD', 'SOL/USD']", "['BTC/USD', 'ETH/USD', 'BNB/USD', 'XRP/USD', 'SOL/USD', 'SHIB/USD']");
-          replace('tests/feeds.test.mjs',"  }}), /unavailable/);\n  assert.equal(cancelled, true);", "  }, restConnector: async () => { throw new Error('Fallback unavailable'); }}), /unavailable/);\n  assert.equal(cancelled, true);");
-          replace('tests/core.test.mjs',"['BTC','ETH','BNB','XRP','SOL','KISHU','WKC','CREPE']", "['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE']");
-          replace('tests/core.test.mjs','all eight token identities','all nine token identities');
-          replace('tests/worker.test.mjs','config.body.coins.length, 8','config.body.coins.length, 9');
-          replace('tests/worker.test.mjs',"['BTC', 'ETH', 'BNB', 'XRP', 'SOL'].map", "['BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'SHIB'].map");
-          replace('tests/worker-runtime.test.mjs','config.coins.length, 8','config.coins.length, 9');
-          replace('scripts/test-alerts-browser.cjs',"['BTC','ETH','BNB','XRP','SOL','KISHU','WKC','CREPE']", "['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE']");
-          replace('tests/rest-feed.test.mjs','all five requests','all six requests');
-          replace('tests/rest-feed.test.mjs',"['BTC', 'ETH', 'BNB', 'XRP', 'SOL']", "['BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'SHIB']");
-          replace('tests/rest-feed.test.mjs','[0, 1000, 2000, 3000, 4000]','[0, 1000, 2000, 3000, 4000, 5000]');
-          replace('tests/rest-feed.test.mjs',"f.type === 'snapshot').length, 5", "f.type === 'snapshot').length, 6");
-          replace('tests/rest-feed.test.mjs',"f.type === 'update').length, 5", "f.type === 'update').length, 6");
-          replace('tests/rest-feed.test.mjs',"f.channel === 'ticker').length, 5", "f.channel === 'ticker').length, 6");
-          replace('tests/rest-feed.test.mjs','s.calls[5].at','s.calls[6].at');
-          replace('tests/rest-feed.test.mjs','s.calls.length, 10','s.calls.length, 12');
-          replace('tests/rest-feed.test.mjs','s.waits.length, 8','s.waits.length, 10');
-          replace('tests/rest-feed.test.mjs','s.calls.length, 5','s.calls.length, 6',3);
-          replace('tests/rest-feed.test.mjs','s.waits.length, 4','s.waits.length, 5');
-          fs.writeFileSync('tests/shib-and-gateway.test.mjs',`import test from 'node:test';
-          import assert from 'node:assert/strict';
-          import {COINS, normaliseRule, evaluateRule} from '../alerts/core.mjs';
-          import {parseKrakenMessage, connectKraken, KRAKEN_WS_URL} from '../alerts/feeds.mjs';
-          import {parseRestTrade} from '../alerts/rest-feed.mjs';
-          const now=Date.parse('2026-11-14T12:00:00Z');
-          test('SHIB is a true USD alert source with exact decimal threshold crossing',()=>{
-            assert.equal(COINS.SHIB.pair,'SHIB/USD');
-            const rule=normaliseRule({id:'7cb74454-c3af-4e3b-8a83-daf17963bba0',coin:'SHIB',direction:'above',threshold:'0.00000415',repeat:false,enabled:true});
-            const quote=(price,time)=>({coin:'SHIB',price,source:'Kraken SHIB/USD',timestamp:time,receivedAt:time});
-            const baseline=evaluateRule(rule,null,quote('0.00000414',now),now);
-            assert.equal(baseline.event,null);
-            const crossed=evaluateRule(rule,baseline.state,quote('0.00000416',now+1000),now+1000);
-            assert.equal(crossed.event.coin,'SHIB');assert.equal(crossed.event.threshold,'0.00000415');
-          });
-          test('SHIB stream and REST retain provider timestamps and small decimal values',()=>{
-            const tick={symbol:'SHIB/USD',last:0.000004154,timestamp:new Date(now).toISOString()};
-            const parsed=parseKrakenMessage(JSON.stringify({channel:'ticker',type:'update',data:[tick]}),now);
-            assert.equal(parsed.quotes[0].coin,'SHIB');assert.equal(parsed.quotes[0].price,'0.000004154');
-            const packet={error:[],result:{'SHIB/USD':[['0.0000041540','1',now/1000,'s','l','',1]]}};
-            assert.equal(parseRestTrade(packet,'SHIB',now).timestamp,now);
-            assert.equal(parseRestTrade(packet,'SHIB',now+60001),null);
-            assert.equal(parseRestTrade({error:[],result:{'SHIB/USDT':packet.result['SHIB/USD']}},'SHIB',now),null);
-          });
-          for(const status of [429,502,503,526])test('secure REST fallback after streaming HTTP '+status,async()=>{
-            let attempts=0,cancelled=false,fallback=0;
-            const socket={transport:'rest',close(){}};
-            const result=await connectKraken({fetchImpl:async(url,options)=>{
-              attempts++;assert.equal(url,KRAKEN_WS_URL);assert(url.startsWith('https://'));assert.equal(options.redirect,'manual');
-              return {status,body:{async cancel(){cancelled=true;}}};
-            },restConnector:async()=>{fallback++;return socket;}});
-            assert.equal(result,socket);assert.equal(attempts,1);assert.equal(fallback,1);assert(cancelled);
-          });
-          `);
-          const readme=fs.readFileSync('README.md','utf8');
-          fs.writeFileSync('README.md',readme.replace('The phone alert source adapters cover eight coins; SHIB currently has chart coverage only. BTC, ETH, BNB, XRP and SOL use Kraken\'s true USD pairs.','The phone alert source adapters cover all nine coins. BTC, ETH, BNB, XRP, SOL and SHIB use Kraken\'s true USD pairs. If the streaming endpoint is unavailable, the monitor checks timestamped HTTPS trades about every 15 seconds without weakening TLS or treating cached chart prices as current.'));
+          import fs from 'node:fs';import {execFileSync} from 'node:child_process';
+          // Reuse the already reviewed, immutable transformation, including its
+          // original-file hash guards. Do not retrieve or execute remote code.
+          const original=execFileSync('git',['show','a75d93db61732203e7aa100593165118bd84f65c:.github/workflows/complete-alert-upgrade.yml'],{encoding:'utf8'});
+          const match=original.match(/          node --input-type=module <<'NODE'\n([\s\S]*?)\n          NODE/);
+          if(!match)throw Error('Pinned source transformation is missing');
+          const code=match[1].split('\n').map(line=>{if(!line.startsWith('          '))throw Error('Unexpected script indentation');return line.slice(10);}).join('\n');
+          execFileSync(process.execPath,['--input-type=module'],{input:code,stdio:['pipe','inherit','inherit']});
+          function replace(file,from,to){const text=fs.readFileSync(file,'utf8');if(text.split(from).length!==2)throw Error('Ambiguous fixture change: '+file);fs.writeFileSync(file,text.replace(from,to));}
+          replace('tests/pool-runtime-mock.mjs',"'SOL/USD': 100}","'SOL/USD': 100, 'SHIB/USD': 0.00000415}");
+          const marker="        if (request.method === 'POST' && url.href === ";
+          const closedRest="        if (request.method === 'GET' && url.origin === 'https://api.kraken.com' && url.pathname === '/0/public/Trades' && /^(BTC|ETH|BNB|XRP|SOL|SHIB)USD$/.test(url.searchParams.get('pair') || '') && url.searchParams.get('count') === '1' && url.searchParams.get('assetVersion') === '1') {\n          return new Response(null, {status:429, headers:{'Retry-After':'120'}});\n        }\n";
+          replace('tests/worker-runtime.test.mjs',marker,closedRest+marker);
+          replace('scripts/test-alerts-browser.cjs','   assert.deepEqual(errors,[]);\n   console.log',`   assert.deepEqual(errors,[]);
+             assert.equal(await page.locator('#wa-coin option').count(),9);
+             await add(page,'SHIB','0.000004150000000001');
+             assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),2);
+             const shibDraft=await page.evaluate(key=>JSON.parse(localStorage.getItem(key)).drafts.find(rule=>rule.coin==='SHIB'),KEY);
+             assert.equal(shibDraft.threshold,'0.000004150000000001');
+             assert.equal(shibDraft.enabled,false);
+             console.log`);
           console.log(execFileSync('git',['diff','--stat'],{encoding:'utf8'}));
           NODE
       - name: Verify Worker bundle and all backend regression tests
@@ -126,7 +66,7 @@ jobs:
           test "$CURRENT" = "$GITHUB_SHA" || { echo 'Main changed during verification; refusing to overwrite it.'; exit 1; }
           git config user.name 'crypto-watch-build'
           git config user.email 'crypto-watch-build@users.noreply.github.com'
-          git add alerts/core.mjs alerts/feeds.mjs alerts/rest-feed.mjs alerts/worker.mjs assets/alerts.js index.html tests/feeds.test.mjs tests/core.test.mjs tests/worker.test.mjs tests/worker-runtime.test.mjs tests/rest-feed.test.mjs tests/shib-and-gateway.test.mjs scripts/test-alerts-browser.cjs README.md
+          git add alerts/core.mjs alerts/feeds.mjs alerts/rest-feed.mjs alerts/worker.mjs assets/alerts.js index.html tests/feeds.test.mjs tests/core.test.mjs tests/worker.test.mjs tests/worker-runtime.test.mjs tests/rest-feed.test.mjs tests/shib-and-gateway.test.mjs tests/pool-runtime-mock.mjs scripts/test-alerts-browser.cjs README.md
           git rm .github/workflows/complete-alert-upgrade.yml
           git commit -m 'Support SHIB alerts and recover securely from streaming gateway errors'
           git push origin HEAD:main
