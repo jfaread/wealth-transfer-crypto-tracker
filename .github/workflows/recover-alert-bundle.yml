@@ -1,0 +1,55 @@
+name: Publish verified nine-coin alert bundle
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/recover-alert-bundle.yml']
+permissions:
+  contents: write
+concurrency:
+  group: recover-verified-alert-bundle
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      SOURCE_COMMIT: ba3617528592a8fe1655f533e066ec2745cc0cdb
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ba3617528592a8fe1655f533e066ec2745cc0cdb
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.13.1'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Recompile and verify the unchanged source
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          npm run check:worker -- --minify
+          npm test
+      - name: Publish the exact tested bundle
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';import crypto from 'node:crypto';
+          const b=fs.readFileSync('.worker-build/worker.js');fs.mkdirSync('deployment-artifacts',{recursive:true});
+          fs.writeFileSync('deployment-artifacts/worker.js',b);
+          fs.writeFileSync('deployment-artifacts/manifest.json',JSON.stringify({sourceCommit:process.env.SOURCE_COMMIT,runId:process.env.GITHUB_RUN_ID,node:process.version,sha256:crypto.createHash('sha256').update(b).digest('hex'),bytes:b.length,browserVerificationRun:'43597616123'},null,2)+'\n');
+          NODE
+          git config user.name 'crypto-watch-build'
+          git config user.email 'crypto-watch-build@users.noreply.github.com'
+          BRANCH="deploy/alerts-${SOURCE_COMMIT:0:12}"
+          test -z "$(git ls-remote origin "refs/heads/$BRANCH")" || { echo 'Deployment branch already exists; inspect before replacing.'; exit 1; }
+          git checkout -b "$BRANCH"
+          git add deployment-artifacts
+          git commit -m "Verified pool-provider bundle for $SOURCE_COMMIT"
+          git rev-parse HEAD
+          git push origin "HEAD:refs/heads/$BRANCH"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verified-alert-bundle
+          path: deployment-artifacts/
+          retention-days: 7
