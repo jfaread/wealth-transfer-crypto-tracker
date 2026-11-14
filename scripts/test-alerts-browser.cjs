@@ -5,7 +5,7 @@ const assert=require('node:assert/strict');
 const SITE='https://jfaread.github.io/wealth-transfer-crypto-tracker/';
 const API='https://crypto-watch-alerts.qa.workers.dev';
 const KEY='wtct-alerts-v1';
-const IDS=['BTC','ETH','BNB','XRP','SOL','KISHU','WKC','CREPE'];
+const IDS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
 const DEVICE='cb54d1cb-2489-4472-a6ce-d0959789a956';
 const TOKEN=DEVICE+'.'+'1'.repeat(64); // Deliberately synthetic; no live account exists.
 const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.json':'application/json','.webmanifest':'application/manifest+json','.png':'image/png','.svg':'image/svg+xml'};
@@ -103,6 +103,15 @@ const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.jso
    await page.waitForFunction(()=>document.getElementById('wtct-alerts-dialog').getAttribute('aria-busy')==='false');
    assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),1);
    assert.deepEqual(errors,[]);
+   assert.equal(await page.locator('#wa-coin option').count(),9);
+   await add(page,'SHIB','0.000004150000000001');
+   assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),2);
+   const shibDraft=await page.evaluate(key=>JSON.parse(localStorage.getItem(key)).drafts.find(rule=>rule.coin==='SHIB'),KEY);
+   assert.equal(shibDraft.threshold,'0.000004150000000001');
+   assert.equal(await page.evaluate(key=>JSON.parse(localStorage.getItem(key)).auth,KEY),null);
+   assert.match(await page.locator('#wa-message').innerText(),/not active/);
+   assert.equal(await page.evaluate(()=>window.__alertProbe.permissions),0);
+   assert.equal(await page.locator('#wa-server-section').isVisible(),false);
    console.log(`PASS: inactive draft, exact tiny decimal, no permission prompt, keyboard focus and layout at ${width}px.`);
    await context.close();
   }

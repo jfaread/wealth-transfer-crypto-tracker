@@ -57,6 +57,9 @@ function networkMockWorker(endpointPath) {
           feedCount++;
           return new Response(null, {status:503});
         }
+        if (request.method === 'GET' && url.origin === 'https://api.kraken.com' && url.pathname === '/0/public/Trades' && /^(BTC|ETH|BNB|XRP|SOL|SHIB)USD$/.test(url.searchParams.get('pair') || '') && url.searchParams.get('count') === '1' && url.searchParams.get('assetVersion') === '1') {
+          return new Response(null, {status:429, headers:{'Retry-After':'120'}});
+        }
         if (request.method === 'POST' && url.href === ${JSON.stringify(`https://fcm.googleapis.com${endpointPath}`)} && pushCount === 0) {
           pushCount++;
           capturedPush = {headers:Array.from(request.headers),body:Array.from(new Uint8Array(await request.arrayBuffer()))};
@@ -120,7 +123,7 @@ test('Workerd: disabled service exposes honest configuration and refuses registr
     assert.equal(config.enabled, false);
     assert.equal(config.vapidPublicKey, null);
     assert.equal(config.monitor.status, 'disabled');
-    assert.equal(config.coins.length, 8);
+    assert.equal(config.coins.length, 9);
     assert.ok(config.coins.every(coin => coin.enabled === false));
     const registration = await call(mf, '/v1/devices', { method: 'POST', body: {} });
     assert.equal(registration.status, 503);

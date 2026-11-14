@@ -4,7 +4,7 @@ import {createKrakenRestFeed} from './rest-feed.mjs';
 export const KRAKEN_WS_URL = 'https://ws.kraken.com/v2';
 export const KRAKEN_SYMBOLS = Object.freeze({
   'BTC/USD': 'BTC', 'ETH/USD': 'ETH', 'BNB/USD': 'BNB',
-  'XRP/USD': 'XRP', 'SOL/USD': 'SOL',
+  'XRP/USD': 'XRP', 'SOL/USD': 'SOL', 'SHIB/USD': 'SHIB',
 });
 export const LIVE_COINS = Object.freeze(Object.values(KRAKEN_SYMBOLS));
 
@@ -47,7 +47,7 @@ export function reconnectDelay(attempt) {
   return Math.min(60_000, 1_000 * (2 ** Math.max(0, Math.min(6, Math.trunc(attempt) || 0))));
 }
 
-/** Prefer the stream; use paced timestamped trades when its endpoint rate-limits. */
+/** Prefer the stream; use paced HTTPS trades when its endpoint rate-limits or returns a gateway error. */
 export async function connectKraken({fetchImpl = globalThis.fetch, onMessage, onClose, onOpen, timeoutMs = 10_000,
   restConnector = createKrakenRestFeed} = {}) {
   const controller = new AbortController();
@@ -61,7 +61,7 @@ export async function connectKraken({fetchImpl = globalThis.fetch, onMessage, on
     if (response.status !== 101 || !socket) {
       try { await response.body?.cancel(); } catch {}
       controller.abort();
-      if (response.status === 429) {
+      if (response.status === 429 || (response.status >= 500 && response.status <= 599)) {
         clearTimeout(timeout);
         return await restConnector({fetchImpl, onMessage, onClose, onOpen});
       }

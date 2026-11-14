@@ -19,8 +19,8 @@ test('small prices use exact decimals and preserve sub-binary precision', () => 
   for (const value of [NaN,Infinity,0,-1,1e25]) assert.throws(() => decimalFromNumber(value));
 });
 
-test('all eight token identities are fixed, including exact additional contracts', () => {
-  assert.deepEqual(Object.keys(COINS),['BTC','ETH','BNB','XRP','SOL','KISHU','WKC','CREPE']);
+test('all nine token identities are fixed, including exact additional contracts', () => {
+  assert.deepEqual(Object.keys(COINS),['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE']);
   assert.equal(COINS.KISHU.contract,'0xA2b4C0Af19cC16a6CfAcCe81F192B024d625817D');
   assert.equal(COINS.WKC.contract,'0x6ec90334d89dbdc89e08a133271be3d104128edb');
   assert.equal(COINS.CREPE.contract,'0xeb2b7d5691878627eff20492ca7c9a71228d931d');

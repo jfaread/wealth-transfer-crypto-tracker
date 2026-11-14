@@ -5,6 +5,7 @@ export const COINS = Object.freeze({
   BNB: Object.freeze({id:'BNB', name:'BNB', geckoId:'binancecoin', source:'Kraken BNB/USD', pair:'BNB/USD'}),
   XRP: Object.freeze({id:'XRP', name:'XRP', geckoId:'ripple', source:'Kraken XRP/USD', pair:'XRP/USD'}),
   SOL: Object.freeze({id:'SOL', name:'Solana', geckoId:'solana', source:'Kraken SOL/USD', pair:'SOL/USD'}),
+  SHIB: Object.freeze({id:'SHIB', name:'Shiba Inu', geckoId:'shiba-inu', source:'Kraken SHIB/USD', pair:'SHIB/USD'}),
   KISHU: Object.freeze({id:'KISHU', name:'KISHU', geckoId:'kishu-inu', network:'ethereum', contract:'0xA2b4C0Af19cC16a6CfAcCe81F192B024d625817D', source:'Indicative Uniswap v2 KISHU/WETH + Kraken ETH/USD'}),
   WKC: Object.freeze({id:'WKC', name:'Wiki Cat', geckoId:'wiki-cat', network:'bsc', contract:'0x6ec90334d89dbdc89e08a133271be3d104128edb', source:'Indicative PancakeSwap v2 WKC/WBNB + Kraken BNB/USD'}),
   CREPE: Object.freeze({id:'CREPE', name:'CREPE', geckoId:'crepe-2', network:'bsc', contract:'0xeb2b7d5691878627eff20492ca7c9a71228d931d', source:'Indicative PancakeSwap v2 CREPE/WBNB + Kraken BNB/USD'})

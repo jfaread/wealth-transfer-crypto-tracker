@@ -1,6 +1,6 @@
 /** A paced, timestamp-preserving fallback for a rate-limited Kraken WebSocket. */
 export const REST_POLL_MS = 15_000;
-const COINS = Object.freeze(['BTC', 'ETH', 'BNB', 'XRP', 'SOL']);
+const COINS = Object.freeze(['BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'SHIB']);
 const ROOT = 'https://api.kraken.com/0/public/Trades';
 
 export function parseRestTrade(packet, coin, now = Date.now()) {

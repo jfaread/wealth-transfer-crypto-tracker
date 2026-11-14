@@ -68,7 +68,7 @@ html,body{background:#120e24}body{background:radial-gradient(ellipse at 85% 0%,#
   <div class="wa-head"><div><p class="wa-kicker">Crypto-Watch / your thresholds</p><h2 id="wa-title">Price alerts</h2></div><button id="wa-close" class="wa-close" type="button" aria-label="Close price alerts">×</button></div>
   <div class="wa-content">
     <p id="wa-intro">Choose a USD price to watch. Phone notifications need this device’s permission and an active background monitor.</p>
-    <p class="wa-small">Shiba Inu (SHIB) is available on the chart. SHIB phone alerts are not available yet.</p>
+    <p class="wa-small">Shiba Inu (SHIB) is supported by the background monitor. A fresh source and this device’s notification permission are required before an alert can be activated.</p>
     <div id="wa-status" class="wa-status" role="status" aria-live="polite">Phone alerts are being prepared. Background monitoring is not enabled yet.</div>
     <div id="wa-message" class="wa-message" role="status" aria-live="polite" hidden></div>
     <div class="wa-actions"><button id="wa-connect" class="wa-button wa-primary" type="button" hidden>Enable phone alerts</button><button id="wa-test" class="wa-button" type="button" hidden>Request test alert</button><button id="wa-refresh" class="wa-button" type="button">Check service</button><button id="wa-disconnect" class="wa-button wa-danger" type="button" hidden>Disconnect this device</button><button id="wa-reset" class="wa-button wa-danger" type="button" hidden>Reset unfinished setup</button></div>
@@ -78,7 +78,7 @@ html,body{background:#120e24}body{background:radial-gradient(ellipse at 85% 0%,#
     <form id="wa-rule-form" class="wa-form" novalidate>
       <h3>Add a price threshold</h3>
       <div class="wa-fields">
-        <label><span>Cryptocurrency</span><select id="wa-coin" name="coin"><option value="BTC">Bitcoin (BTC)</option><option value="ETH">Ethereum (ETH)</option><option value="BNB">BNB</option><option value="XRP">XRP</option><option value="SOL">Solana (SOL)</option><option value="KISHU">Kishu Inu (KISHU)</option><option value="WKC">Wiki Cat (WKC)</option><option value="CREPE">CREPE</option></select></label>
+        <label><span>Cryptocurrency</span><select id="wa-coin" name="coin"><option value="BTC">Bitcoin (BTC)</option><option value="ETH">Ethereum (ETH)</option><option value="BNB">BNB</option><option value="XRP">XRP</option><option value="SOL">Solana (SOL)</option><option value="SHIB">Shiba Inu (SHIB)</option><option value="KISHU">Kishu Inu (KISHU)</option><option value="WKC">Wiki Cat (WKC)</option><option value="CREPE">CREPE</option></select></label>
         <label><span>Price crosses</span><select id="wa-direction" name="direction"><option value="above">Above</option><option value="below">Below</option></select></label>
         <label class="wa-wide"><span>Threshold in USD</span><input id="wa-threshold" name="threshold" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" maxlength="64" placeholder="For example, 0.000000001" aria-describedby="wa-decimal-help wa-crossing-help" required></label>
         <label class="wa-wide"><span>Alert frequency</span><select id="wa-repeat" name="repeat"><option value="once">Once, then stop</option><option value="repeat">Repeat on a new crossing (at least 60s apart)</option></select></label>
@@ -90,7 +90,7 @@ html,body{background:#120e24}body{background:radial-gradient(ellipse at 85% 0%,#
     </form>
     <section id="wa-server-section" class="wa-rule-section" aria-labelledby="wa-server-heading" hidden><h3 id="wa-server-heading">Rules saved with the monitor</h3><ul id="wa-server-rules" class="wa-rules"></ul></section>
     <section class="wa-rule-section" aria-labelledby="wa-draft-heading"><h3 id="wa-draft-heading">Saved on this device - not active</h3><ul id="wa-draft-rules" class="wa-rules"></ul><div class="wa-actions"><button id="wa-activate-drafts" class="wa-button" type="button" hidden>Activate available drafts</button></div></section>
-    <details id="wa-source-details" hidden><summary>Background price sources</summary><p>BTC, ETH, BNB, XRP and SOL use Kraken USD prices. KISHU, Wiki Cat and CREPE use indicative prices from selected trading pools, converted to USD and checked about every 15 seconds. These prices can differ from the chart and the price available for a trade. Brief crossings between checks can be missed.</p><ul id="wa-sources" class="wa-sources"></ul></details>
+    <details id="wa-source-details" hidden><summary>Background price sources</summary><p>BTC, ETH, BNB, XRP, SOL and SHIB use Kraken USD prices. When streaming is unavailable, timestamped trades are checked about every 15 seconds. KISHU, Wiki Cat and CREPE use indicative prices from selected trading pools, converted to USD and checked about every 15 seconds. These prices can differ from the chart and the price available for a trade. Brief crossings between checks can be missed.</p><ul id="wa-sources" class="wa-sources"></ul></details>
     <p class="wa-small">You can save up to 16 rules. Device access is stored in this browser; clearing its website data can remove your ability to manage that registration. Disconnect this device before clearing data.</p>
   </div>
 </dialog>

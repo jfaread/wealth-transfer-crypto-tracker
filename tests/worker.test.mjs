@@ -79,7 +79,7 @@ test('disabled deployment has honest config and cannot register or send', async 
   const h = setup({env: {ALERTS_ENABLED: 'false'}});
   const config = await request(h, '/v1/config');
   assert.equal(config.body.enabled, false); assert.equal(config.body.vapidPublicKey, null);
-  assert.equal(config.body.coins.length, 8); assert(config.body.coins.every(c => !c.enabled));
+  assert.equal(config.body.coins.length, 9); assert(config.body.coins.every(c => !c.enabled));
   const result = await request(h, '/v1/devices', {method: 'POST', body: {}});
   assert.equal(result.status, 503); assert.equal(h.sent.length, 0);
 });
@@ -317,7 +317,7 @@ test('activating a rule after idle shutdown restarts a bounded freshness probe',
 });
 
 async function nativeQuotes(h) {
-  await h.object.processQuotes(['BTC', 'ETH', 'BNB', 'XRP', 'SOL'].map(coin => quote(h, '100', {coin, source: `Kraken ${coin}/USD`})));
+  await h.object.processQuotes(['BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'SHIB'].map(coin => quote(h, '100', {coin, source: `Kraken ${coin}/USD`})));
 }
 
 function poolResult(options, {price = '100', errors = [], resetCoins = [], snapshot} = {}) {

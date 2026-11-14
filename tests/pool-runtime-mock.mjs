@@ -18,7 +18,7 @@ const address = value => '0x' + value.slice(2).padStart(64, '0');
 const sockets = new Set(), headers = {};
 let feedCount = 0, rpcCount = 0, blockedCount = 0;
 function tick(socket, type = 'update') {
-  const prices = {'BTC/USD': 100000, 'ETH/USD': 2000, 'BNB/USD': 600, 'XRP/USD': 1, 'SOL/USD': 100};
+  const prices = {'BTC/USD': 100000, 'ETH/USD': 2000, 'BNB/USD': 600, 'XRP/USD': 1, 'SOL/USD': 100, 'SHIB/USD': 0.00000415};
   socket.send(JSON.stringify({channel: 'ticker', type,
     data: Object.entries(prices).map(([symbol, last]) => ({symbol, last, timestamp: new Date().toISOString()}))}));
 }

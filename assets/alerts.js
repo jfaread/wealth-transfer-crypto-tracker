@@ -6,7 +6,7 @@
   const MAX_RULES = 16;
   const COINS = [
     ['BTC', 'Bitcoin'], ['ETH', 'Ethereum'], ['BNB', 'BNB'], ['XRP', 'XRP'],
-    ['SOL', 'Solana'], ['KISHU', 'Kishu Inu'], ['WKC', 'Wiki Cat'], ['CREPE', 'CREPE']
+    ['SOL', 'Solana'], ['SHIB', 'Shiba Inu'], ['KISHU', 'Kishu Inu'], ['WKC', 'Wiki Cat'], ['CREPE', 'CREPE']
   ];
   const COIN_IDS = COINS.map(([id]) => id);
   const POOL_COINS = ['KISHU', 'WKC', 'CREPE'];

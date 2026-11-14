@@ -6,9 +6,9 @@ const now = Date.parse('2026-11-13T16:00:00.000Z');
 const frame = (data, type = 'update') => JSON.stringify({channel: 'ticker', type, data});
 const tick = (symbol = 'BTC/USD', last = 100) => ({symbol, last, timestamp: new Date(now).toISOString()});
 
-test('stream subscription requests exactly five true-USD instruments', () => {
+test('stream subscription requests exactly six true-USD instruments', () => {
   const request = krakenSubscription();
-  assert.deepEqual(request.params.symbol, ['BTC/USD', 'ETH/USD', 'BNB/USD', 'XRP/USD', 'SOL/USD']);
+  assert.deepEqual(request.params.symbol, ['BTC/USD', 'ETH/USD', 'BNB/USD', 'XRP/USD', 'SOL/USD', 'SHIB/USD']);
   assert.equal(request.params.event_trigger, 'trades');
   assert.equal(request.params.snapshot, true);
 });
@@ -56,7 +56,7 @@ test('failed handshake cancels its response and aborts before a later reconnect'
   await assert.rejects(connectKraken({fetchImpl: async (_url, options) => {
     signal = options.signal;
     return {status: 503, body: {async cancel() { cancelled = true; }}};
-  }}), /unavailable/);
+  }, restConnector: async () => { throw new Error('Fallback unavailable'); }}), /unavailable/);
   assert.equal(cancelled, true); assert.equal(signal.aborted, true);
 });
 

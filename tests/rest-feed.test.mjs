@@ -39,25 +39,25 @@ test('Retry-After seconds and dates cannot shorten the minimum cooldown', () => 
   assert.equal(retryDelay('1', START), 60000);
   assert.equal(retryDelay(null, START), 60000);
 });
-test('fallback spaces all five requests and starts with snapshots, then genuine updates', async () => {
+test('fallback spaces all six requests and starts with snapshots, then genuine updates', async () => {
   const s = await setup();
   assert.equal(s.opened, 1);
   assert.equal(s.socket.transport, 'rest');
   assert.equal(s.socket.samplingMs, REST_POLL_MS);
-  assert.deepEqual(s.calls.map(c => c.coin), ['BTC', 'ETH', 'BNB', 'XRP', 'SOL']);
-  assert.deepEqual(s.calls.map(c => c.at - START), [0, 1000, 2000, 3000, 4000]);
-  assert.equal(s.frames.filter(f => f.type === 'snapshot').length, 5);
+  assert.deepEqual(s.calls.map(c => c.coin), ['BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'SHIB']);
+  assert.deepEqual(s.calls.map(c => c.at - START), [0, 1000, 2000, 3000, 4000, 5000]);
+  assert.equal(s.frames.filter(f => f.type === 'snapshot').length, 6);
   await s.next();
-  assert.equal(s.calls[5].at, START + REST_POLL_MS);
-  assert.equal(s.frames.filter(f => f.type === 'update').length, 5);
+  assert.equal(s.calls[6].at, START + REST_POLL_MS);
+  assert.equal(s.frames.filter(f => f.type === 'update').length, 6);
   s.socket.close(); assert.equal(s.queue.length, 0);
 });
 test('duplicate observations never renew their timestamps or remove request pacing', async () => {
   const s = await setup(coin => Response.json(packet(coin, START)));
   await s.next();
-  assert.equal(s.calls.length, 10);
-  assert.equal(s.frames.filter(f => f.channel === 'ticker').length, 5);
-  assert.equal(s.waits.length, 8);
+  assert.equal(s.calls.length, 12);
+  assert.equal(s.frames.filter(f => f.channel === 'ticker').length, 6);
+  assert.equal(s.waits.length, 10);
   for (const f of s.frames.filter(f => f.channel === 'ticker')) assert.equal(f.data[0].timestamp, new Date(START).toISOString());
   s.socket.close();
 });
@@ -76,7 +76,7 @@ test('persisted server cooldown survives a new fallback instance', async () => {
   assert.equal(s.calls.length, 0);
   await s.next(); await s.next(); await s.next();
   assert.equal(s.calls.length, 0);
-  await s.next(); assert.equal(s.calls.length, 5);
+  await s.next(); assert.equal(s.calls.length, 6);
   s.socket.close();
 });
 test('provider errors force a recovery baseline rather than an invented crossing', async () => {
@@ -90,15 +90,15 @@ test('provider errors force a recovery baseline rather than an invented crossing
 });
 test('empty and stale trade lists do not create current observations', async () => {
   const s = await setup(coin => Response.json(packet(coin, START - 120000)));
-  assert.equal(s.calls.length, 5);
-  assert.equal(s.waits.length, 4);
+  assert.equal(s.calls.length, 6);
+  assert.equal(s.waits.length, 5);
   assert.equal(s.frames.filter(f => f.channel === 'ticker').length, 0);
   s.socket.close();
 });
 test('closing the fallback prevents further network calls', async () => {
   const s = await setup(); const pending = s.queue[0];
   s.socket.close(); s.time += 60000; await pending.fn();
-  assert.equal(s.calls.length, 5);
+  assert.equal(s.calls.length, 6);
 });
 test('rate-limited stream selects a single fallback, without retrying the rejected socket', async () => {
   let calls = 0, cancelled = false, started = false;

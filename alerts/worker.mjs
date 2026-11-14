@@ -18,7 +18,7 @@ export class CryptoAlertMonitor extends Monitor {
     return {...result, transport: fallback ? 'timestamped-trade-polling' : 'websocket',
       tradePollingIntervalMs: fallback ? REST_POLL_MS : null,
       ...(fallback && !['disabled', 'budget_paused'].includes(result.status) ? {
-        message: 'The streaming feed is rate-limited. Kraken USD trades are checked about every 15 seconds; pool prices are also sampled. Stale coins are paused. Delivery is best effort, not instantaneous.',
+        message: 'The streaming feed is unavailable. Kraken USD trades are checked about every 15 seconds; pool prices are also sampled. Stale coins are paused. Delivery is best effort, not instantaneous.',
       } : {})};
   }
   config() {
