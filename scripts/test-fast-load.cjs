@@ -54,8 +54,8 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  const page=await browser.newPage();await page.route('**/*',async route=>{if(route.request().url()==='https://tracker.test/'){await route.fulfill({contentType:'text/html',body:html});return;}if(await serveAsset(route))return;await route.abort();});await page.goto('https://tracker.test/');assert.equal(await page.locator('[data-series]').count(),CHART_COINS.length);await page.close();
  // Manual refresh must fetch fresh quotes, preserve history and permit immediate retries after failure.
  const oldSnapshots=JSON.parse(snapshots),aged=Date.now()-3*3600000;
- for(const b of Object.values(oldSnapshots.ranges)){b.savedAt=aged;b.spec.historySavedAt=aged;}
- const oldHtml=html.replace(/(<script id="wtct-bootstrap" type="application\/json">)([\s\S]*?)(<\/script>)/,(_,a,payload,b)=>{const j=JSON.parse(payload);for(const x of Object.values(j.ranges)){x.savedAt=aged;x.spec.historySavedAt=aged;}return a+JSON.stringify(j)+b;});
+ for(const b of Object.values(oldSnapshots.ranges)){b.savedAt=aged;b.spec.historySavedAt=aged;for(const [,d]of b.data)d.historySavedAt=aged;}
+ const oldHtml=html.replace(/(<script id="wtct-bootstrap" type="application\/json">)([\s\S]*?)(<\/script>)/,(_,a,payload,b)=>{const j=JSON.parse(payload);for(const x of Object.values(j.ranges)){x.savedAt=aged;x.spec.historySavedAt=aged;for(const [,d]of x.data)d.historySavedAt=aged;}return a+JSON.stringify(j)+b;});
  const cg={BTC:'bitcoin',ETH:'ethereum',BNB:'binancecoin',XRP:'ripple',SOL:'solana',SHIB:'shiba-inu',KISHU:'kishu-inu',WKC:'wiki-cat',CREPE:'crepe-2'};
  const quoteResponse=Object.fromEntries(oldSnapshots.ranges['1D'].data.map(([id,d])=>[cg[id],{usd:d.points.at(-1).p*1.01,last_updated_at:Math.floor(Date.now()/1000)}]));
  const cachedQuotes=Object.fromEntries(Object.entries(quoteResponse).map(([id,q])=>[id,{...q,usd:q.usd*1.02}]));
@@ -97,7 +97,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
    }
    if(u.hostname==='api.coingecko.com'&&u.pathname.endsWith('/market_chart')){
     calls.history++;calls.events.push('history');
-    if(settings.history==='fresh')await fulfilHistory(route);
+    if(settings.history==='fresh'||settings.history==='partial'&&!u.pathname.includes('/crepe-2/'))await fulfilHistory(route);
     else if(settings.history==='controlled'){if(historyWaiter){const resolve=historyWaiter;historyWaiter=null;resolve(route);}else heldHistory.push(route);}
     else if(settings.history==='rate-limited')await route.fulfill({status:429,headers:{'Retry-After':'60'},contentType:'application/json',body:'{}'});
     else await route.abort();
@@ -164,13 +164,24 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  assert.equal(limited.calls.events[0],'quotes','Current quotes must be requested before old history');assert(limited.calls.history>0);assert.equal(limited.calls.quote,1);assert.equal(limited.calls.cache,0);
  const limitedState=await limited.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
  assert.equal(limitedState.series.length,CHART_COINS.length);assert(limitedState.series.every(x=>Date.now()-x.last.t<300000));assert((await limited.page.locator('#warning').innerText()).includes('history'));assert(!/Current quotes could not be checked/.test(await limited.page.locator('#warning').innerText()));await limited.page.close();
+ // A failed token cannot discard eight successful repairs, or redownload them on retry.
+ const partial=await openRefreshPage({history:'partial'});
+ await partial.page.locator('#refresh').click();await waitForRefresh(partial.page);
+ const savedPartial=await partial.page.evaluate(()=>JSON.parse(localStorage.getItem('wtct:v3:range:1D')));
+ assert(savedPartial.data.find(([id])=>id==='BTC')[1].historySavedAt>aged);
+ assert.equal(savedPartial.data.find(([id])=>id==='CREPE')[1].historySavedAt,aged);
+ assert.match(await partial.page.locator('#warning').innerText(),/CREPE/);
+ const repairedCalls=partial.calls.history;partial.settings.history='fresh';
+ await partial.page.locator('#refresh').click();await waitForRefresh(partial.page);
+ assert.equal(partial.calls.history-repairedCalls,1,'Retry only the missing token history');
+ assert(await partial.page.locator('#warning').isHidden());await partial.page.close();
  // The history deadline covers the whole repair, not a new 15 seconds for each coin.
  const slow=await openRefreshPage({history:'controlled',clock:true}),firstHistory=slow.nextHistory();
  await slow.page.locator('#refresh').click();const firstRoute=await firstHistory;
  await slow.page.getByText(/^Quotes updated ·/).waitFor();assert((await slow.page.evaluate(()=>window.WealthTransferCryptoTracker.getState())).busy);
  await slow.page.clock.fastForward(10000);const secondHistory=slow.nextHistory();await fulfilHistory(firstRoute);const secondRoute=await secondHistory;
  await slow.page.clock.fastForward(6000);await waitForRefresh(slow.page);await slow.page.getByText(/^Quotes updated ·/).waitFor();
- assert.equal(slow.calls.quote,1);assert.equal(slow.calls.history,2);assert.equal(await slow.page.locator('[data-series]').count(),CHART_COINS.length);assert((await slow.page.locator('#warning').innerText()).includes('history'));
+ assert.equal(slow.calls.quote,1);assert(slow.calls.history>=2&&slow.calls.history<=3,"Only the two bounded repair lanes may run before the shared deadline");assert.equal(await slow.page.locator('[data-series]').count(),CHART_COINS.length);assert((await slow.page.locator('#warning').innerText()).includes('history'));
  await secondRoute.abort().catch(()=>{});await slow.page.close();
  console.log('PASS: history repair, persisted Eastern Time, current-quote refresh, in-flight button guard, stale/missing HTTP-200 fallback, stale-source rejection, selected-coin and SHIB-only validation, actual cached-quote age, quotes before rate-limited history, shared history deadline and immediate retry.');
  await browser.close();console.log('PASS: immediate offline chart, single snapshot request, all nine coins across prepared periods, SHIB price and comparison restoration, rapid selections, Price-button switching and comparison restoration, tiny prices, mobile widths and isolated Jon George panel.');

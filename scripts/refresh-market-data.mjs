@@ -1,18 +1,38 @@
-import {mkdir,writeFile,readFile} from 'node:fs/promises';
-const coins={BTC:'bitcoin',ETH:'ethereum',BNB:'binancecoin',XRP:'ripple',SOL:'solana',SHIB:'shiba-inu',KISHU:'kishu-inu',WKC:'wiki-cat',CREPE:'crepe-2'};
+import {mkdir,writeFile,readFile,rename} from 'node:fs/promises';
+import {COINS,HOUR,validPrices,reusableWindow,acceptWindow,createClient} from './market-data-core.mjs';
 await mkdir('data',{recursive:true});
-try{const manifest=JSON.parse(await readFile('data/manifest.json','utf8'));if(Date.now()-manifest.updatedAt<(process.env.REUSE_MARKET_DATA==='true'?1800000:900000)&&manifest.updatedAt<=Date.now()+300000){for(const symbol of Object.keys(coins)){const item=JSON.parse(await readFile('data/'+symbol+'.json','utf8'));if(item.id!==coins[symbol]||!Array.isArray(item.prices?.[31]))throw Error('Incomplete cache');}console.log('Reusing verified snapshot for this deployment.');process.exit(0);}}catch{}
-let lastRequest=0;const outputs=[];
-async function get(url){for(let attempt=0;attempt<3;attempt++){const delay=Math.max(0,7500-(Date.now()-lastRequest));await new Promise(r=>setTimeout(r,delay));lastRequest=Date.now();const r=await fetch(url,{signal:AbortSignal.timeout(30000)});if(r.status===429){await new Promise(r=>setTimeout(r,60000));continue;}if(!r.ok)throw Error('HTTP '+r.status);const j=await r.json();if(!Array.isArray(j.prices)||j.prices.length<2||j.prices.length>5000)throw Error('Missing prices');let previous=0;for(const p of j.prices){if(!Array.isArray(p)||p.length!==2||!Number.isSafeInteger(p[0])||p[0]<=previous||!Number.isFinite(p[1])||p[1]<=0)throw Error('Invalid prices');previous=p[0];}return j.prices;}throw Error('Rate limit persisted');}
-for(const [symbol,id] of Object.entries(coins)){
- const item={symbol,id,updatedAt:Date.now(),prices:{}};
- for(const days of [31,365]){try{item.prices[days]=await get(`https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=usd&days=${days}`);}catch(e){console.error(symbol,days,e.message);try{const old=JSON.parse(await readFile(`data/${symbol}.json`,'utf8'));if(Date.now()-old.updatedAt<7200000&&old.prices[days])item.prices[days]=old.prices[days];item.updatedAt=Math.min(item.updatedAt,old.updatedAt);}catch{}}}
- if(!item.prices[31])throw Error('No current one-day prices for '+symbol);
- outputs.push(item);console.log('Verified',symbol,Object.keys(item.prices).join(',')+' day windows');
+const outputs=new Map(),failures=[],get=createClient();
+for(const [symbol,id]of Object.entries(COINS)){
+ let item;try{item=JSON.parse(await readFile(`data/${symbol}.json`,'utf8'));if(item.symbol!==symbol||item.id!==id)throw Error('Wrong token');for(const days of [31,365])validPrices(item.prices?.[days]);}catch{item={symbol,id,updatedAt:0,prices:{}};}
+ outputs.set(symbol,item);
 }
-const asOf=Math.min(...outputs.map(x=>x.prices[31].at(-1)[0]));
-if(Date.now()-asOf>7200000||asOf>Date.now()+300000)throw Error('Stale/inconsistent snapshot');
-for(const item of outputs)await writeFile(`data/${item.symbol}.json`,JSON.stringify(item));
-await writeFile('data/manifest.json',JSON.stringify({version:1,asOf,updatedAt:Math.min(...outputs.map(x=>x.updatedAt)),source:'CoinGecko aggregate USD',coins:Object.keys(coins)}));
-console.log('Saved verified aggregate history for',outputs.length,'coins at',new Date(asOf).toISOString());
-
+// Prioritise the recent chart for every coin before doing any yearly downloads.
+for(const days of [31,365])for(const [symbol,id]of Object.entries(COINS)){
+ let item=outputs.get(symbol);if(reusableWindow(item,days))continue;
+ try{
+  const packet=await get(`https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=usd&days=${days}`);
+  item=acceptWindow(item,days,packet?.prices);outputs.set(symbol,item);
+  const path=`data/${symbol}.json`;await writeFile(path+'.tmp',JSON.stringify(item));await rename(path+'.tmp',path);
+  console.log('Updated',symbol,days,'day history; last observation',new Date(item.prices[days].at(-1)[0]).toISOString());
+ }catch(e){failures.push({symbol,days,error:e.message,...(e.retryAt?{retryAt:e.retryAt}:{})});console.warn('Retained original dated history:',symbol,days,e.message);}
+}
+// One bounded recovery round honours the provider's requested pause. It retries
+// only failed windows, never the already saved successful coin histories.
+const deferred=failures.filter(f=>f.retryAt),resume=Math.max(0,...deferred.map(f=>f.retryAt));
+if(deferred.length&&resume-Date.now()<=120000){
+ await new Promise(resolve=>setTimeout(resolve,Math.max(0,resume-Date.now())));
+ for(const failed of deferred){
+  try{const id=COINS[failed.symbol],packet=await get('https://api.coingecko.com/api/v3/coins/'+id+'/market_chart?vs_currency=usd&days='+failed.days);
+   const item=acceptWindow(outputs.get(failed.symbol),failed.days,packet?.prices);outputs.set(failed.symbol,item);
+   const path='data/'+failed.symbol+'.json';await writeFile(path+'.tmp',JSON.stringify(item));await rename(path+'.tmp',path);
+   failures.splice(failures.indexOf(failed),1);console.log('Recovered after provider cooldown:',failed.symbol,failed.days);
+  }catch(e){failed.error=e.message;if(e.retryAt){failed.retryAt=e.retryAt;break;}}
+ }
+}
+// Publication still has to possess genuine, validated histories. A failed fetch
+// does not erase an older window or give it a new check timestamp.
+for(const [symbol,item]of outputs)for(const days of [31,365]){try{validPrices(item.prices[days]);}catch{throw Error('No verified '+days+' day history is available for '+symbol);}}
+const items=[...outputs.values()],now=Date.now();
+const manifest={version:1,asOf:Math.min(...items.map(x=>x.prices[31].at(-1)[0])),updatedAt:Math.min(...items.map(x=>x.windowUpdatedAt?.[31]??x.updatedAt)),source:'CoinGecko aggregate USD',coins:Object.keys(COINS),lastAttemptAt:now,failures,coverage:Object.fromEntries(items.map(x=>[x.symbol,{lastObservedAt:x.prices[31].at(-1)[0],historyCheckedAt:x.windowUpdatedAt?.[31]??x.updatedAt}]))};
+await writeFile('data/manifest.json.tmp',JSON.stringify(manifest));await rename('data/manifest.json.tmp','data/manifest.json');
+console.log('Preserved',items.length,'independent histories;',failures.length,'provider failures; common coverage ends',new Date(manifest.asOf).toISOString());

@@ -200,19 +200,35 @@ async function getJSON(path,signal){
  return j;
 }
 
+const aggregateHistories=new Map();
 async function fetchAggregate(id,spec,signal,direct=false){
- const days=spec.range==='1D'?1:Math.min(365,Math.ceil((spec.end-spec.start)/86400000)+1);
  if(spec.range==='5Y')throw Error('This free aggregate source supports at most 365 days. Select a shorter period, or deselect Kishu Inu, Wiki Cat and CREPE for Binance five-year history.');
- let j;try{if(direct)throw Error('Refreshing history');const cached=await requestJSON(new URL('./data/'+id+'.json',location.href).href,signal,8000);const key=['1D','5D','1M'].includes(spec.range)?'31':'365';if(cached.id!==CG_IDS[id]||!Number.isFinite(cached.updatedAt)||Date.now()-cached.updatedAt>7200000||cached.updatedAt>Date.now()+300000||!Array.isArray(cached.prices?.[key]))throw Error('Cache unavailable');j={prices:cached.prices[key]};}catch(e){if(signal.aborted)throw e;j=await requestJSON('https://api.coingecko.com/api/v3/coins/'+CG_IDS[id]+'/market_chart?vs_currency=usd&days='+Math.min(365,days),signal,15000);}
- if(!Array.isArray(j.prices)||j.prices.length>5000)throw Error('Unexpected aggregate market data.');
- const raw=j.prices.map(r=>{if(!Array.isArray(r)||r.length!==2||!Number.isSafeInteger(r[0])||!Number.isFinite(r[1])||r[1]<=0)throw Error('Invalid aggregate observation.');return{t:r[0],p:r[1]};});
- for(let i=1;i<raw.length;i++)if(raw[i].t<=raw[i-1].t)throw Error('Duplicate or out-of-order aggregate data.');
- const first=raw.find(x=>x.t>=spec.start),last=raw.filter(x=>x.t<=spec.end).at(-1);
- if(!first||first.t-spec.start>spec.step||!last||spec.end-last.t>spec.step)throw Error('History does not cover this period for '+id+'.');
- const base=first.p,points=[{t:spec.start,p:base,r:0}];if(first.t>spec.start)points.push({...first,r:0});let gaps=0;
- for(const x of raw){if(x.t<=first.t||x.t>spec.end)continue;const gapBefore=x.t-points.at(-1).t>spec.step*1.5;if(gapBefore)gaps++;points.push({...x,r:(x.p/base-1)*100,gapBefore});}
- if(points.length<2)throw Error('Not enough observations.');return{id,base,points,gaps,asOf:Date.now()};
+ const key=['1D','5D','1M'].includes(spec.range)?31:365,cacheKey=id+':'+key,ttl=key===31?1800000:43200000;
+ function series(prices,checkedAt){
+  if(!Number.isFinite(checkedAt)||checkedAt<=0||checkedAt>Date.now()+300000||!Array.isArray(prices)||prices.length<2||prices.length>5000)throw Error('Unexpected aggregate market data.');
+  const raw=prices.map(r=>{if(!Array.isArray(r)||r.length!==2||!Number.isSafeInteger(r[0])||r[0]<=0||r[0]>Date.now()+300000||!Number.isFinite(r[1])||r[1]<=0)throw Error('Invalid aggregate observation.');return {t:r[0],p:r[1]};});
+  for(let i=1;i<raw.length;i++)if(raw[i].t<=raw[i-1].t)throw Error('Duplicate or out-of-order aggregate data.');
+  const first=raw.find(x=>x.t>=spec.start),last=raw.filter(x=>x.t<=spec.end).at(-1);
+  if(!first||first.t-spec.start>spec.step||!last||spec.end-last.t>spec.step)throw Error('History does not cover this period for '+id+'.');
+  const base=first.p,points=[{t:spec.start,p:base,r:0}];if(first.t>spec.start)points.push({...first,r:0});let gaps=0;
+  for(const x of raw){if(x.t<=first.t||x.t>spec.end)continue;const gapBefore=x.t-points.at(-1).t>spec.step*1.5;if(gapBefore)gaps++;points.push({...x,r:(x.p/base-1)*100,gapBefore});}
+  if(points.length<2)throw Error('Not enough observations.');return {id,base,points,gaps,asOf:checkedAt,historySavedAt:checkedAt,historyObservedAt:last.t};
+ }
+ const memo=aggregateHistories.get(cacheKey);
+ if(memo&&Date.now()-memo.checkedAt<ttl){try{return series(memo.prices,memo.checkedAt);}catch{aggregateHistories.delete(cacheKey);}}
+ // A newly published same-origin history is useful even during a manual repair.
+ // It is checked before asking the free provider again.
+ try{
+  const cached=await requestJSON(new URL('./data/'+id+'.json',location.href).href,signal,2000,direct?'reload':'default');
+  const checkedAt=cached.windowUpdatedAt?.[key]??cached.updatedAt;
+  if(cached.id!==CG_IDS[id]||Date.now()-checkedAt>ttl)throw Error('History cache is older');
+  const value=series(cached.prices?.[key],checkedAt);aggregateHistories.set(cacheKey,{prices:cached.prices[key],checkedAt});return value;
+ }catch(e){if(signal.aborted)throw e;}
+ const packet=await requestJSON('https://api.coingecko.com/api/v3/coins/'+CG_IDS[id]+'/market_chart?vs_currency=usd&days='+key,signal,12000);
+ const checkedAt=Date.now(),value=series(packet?.prices,checkedAt);
+ aggregateHistories.set(cacheKey,{prices:packet.prices,checkedAt});return value;
 }
+
 async function fetchCoin(id,spec,signal){
  if(spec.source==='CoinGecko live')return fetchAggregate(id,spec,signal);
  if(['KISHU','WKC','CREPE'].includes(id))throw Error('Select the aggregate source for this token.');
@@ -266,34 +282,39 @@ function showSnapshotStatus(bundle){
   const fresh=observedAt!==null&&observedAt<=now+300000&&now-observedAt<=1800000;
   setStatus(fresh?'ready':'failed',(fresh?'Quotes updated':'Older quotes')+' · '+dateText(observedAt??bundle.spec.end)+' '+zoneLabel());
   if(!fresh){$('warning').hidden=false;$('warning').textContent='These saved quotes are no longer current. Refresh prices checks for quotes from the last 30 minutes.';return;}
-  const old=now-bundle.spec.historySavedAt>7200000;$('warning').hidden=!old;$('warning').textContent=old?'Current prices updated. History provider is delayed (last history: '+dateText(bundle.spec.historySavedAt)+' '+zoneLabel()+'). Refresh prices retries history automatically.':'';return;
+  const delayed=state.coins.filter(id=>now-(available.get(id)?.historySavedAt||bundle.spec.historySavedAt)>7200000);const old=delayed.length>0;$('warning').hidden=!old;$('warning').textContent=old?'Current prices updated. Chart history is delayed for '+delayed.join(', ')+'. Successful history repairs are kept; missing observations remain gaps. Refresh prices retries the remaining history.':'';return;
  }
  const age=Date.now()-bundle.savedAt;
  setStatus(age>7200000?'failed':'ready',(age>7200000?'Older snapshot':'Price snapshot')+' · '+dateText(bundle.spec.end)+' '+zoneLabel());
  $('warning').hidden=age<=7200000;$('warning').textContent=age>7200000?'Historical prices were last updated '+dateText(bundle.savedAt)+' '+zoneLabel()+'. Refresh prices checks current quotes; gaps in older history are not filled in.':'';
 }
 async function repairChartHistory(bundle,wanted,signal){
- const age=Date.now()-(bundle.spec.historySavedAt||bundle.savedAt);
- if(age<=7200000)return bundle;
+ const ageOf=d=>d.historySavedAt||bundle.spec.historySavedAt||bundle.savedAt;
+ const existing=new Map(bundle.data),ttl=bundle.spec.step===86400000?43200000:1800000;
+ const pending=wanted.filter(id=>Date.now()-ageOf(existing.get(id))>ttl);
+ if(!pending.length)return bundle;
  if(signal.aborted)throw new DOMException('Cancelled','AbortError');
- const historyController=new AbortController(),cancelHistory=()=>historyController.abort();
- signal.addEventListener('abort',cancelHistory,{once:true});
- // Optional history work gets one shared budget, not a fresh timeout per coin.
+ const historyController=new AbortController(),cancelHistory=()=>historyController.abort();signal.addEventListener('abort',cancelHistory,{once:true});
  const timer=setTimeout(cancelHistory,15000),historySignal=historyController.signal;
+ const spec={...bundle.spec,end:Math.max(bundle.spec.end,Date.now()),saved:false};
+ const repaired=new Map();let cursor=0;
+ async function work(){
+  while(cursor<pending.length&&!historySignal.aborted){const id=pending[cursor++];try{const value=await fetchAggregate(id,spec,historySignal,true);if(!historySignal.aborted)repaired.set(id,value);}catch(e){if(e.status===429)break;}}
+ }
  try{
-  const end=Date.now(),step=bundle.spec.step,window=rangeSpec(bundle.spec.range,end);
-  const {quoteCheckedAt,...previousSpec}=bundle.spec;
-  const spec={...previousSpec,...window,step,interval:bundle.spec.interval,start:Math.floor(window.start/step)*step,source:bundle.spec.source,saved:false};
-  // Keep existing verified history unless every selected series passes validation.
-  // Stop on the first failure so an unavailable source is not hit repeatedly.
-  const results=[];
-  for(const id of wanted){if(historySignal.aborted)throw new DOMException('Cancelled','AbortError');results.push(await fetchAggregate(id,spec,historySignal,true));}
-  if(historySignal.aborted)throw new DOMException('Cancelled','AbortError');
-  const now=Date.now(),next={spec:{...spec,historySavedAt:now},data:results.map(d=>[d.id,d]),savedAt:now};
-  if(!validBundle(next))throw Error('Updated history failed validation.');
+  // Two bounded lanes avoid a slow coin blocking all others. Every successful
+  // result survives another coin's failure or the shared repair deadline.
+  await Promise.all([work(),work()]);
+  if(signal.aborted)throw new DOMException('Cancelled','AbortError');
+  if(!repaired.size)return bundle;
+  const data=bundle.data.map(([id,d])=>[id,repaired.get(id)||{...d,historySavedAt:ageOf(d)}]);
+  const checkedAt=Math.min(...data.map(([,d])=>d.historySavedAt)),now=Date.now();
+  const next={spec:{...spec,historySavedAt:checkedAt},data,savedAt:now};
+  if(!validBundle(next))return bundle;
   return next;
  }finally{clearTimeout(timer);signal.removeEventListener('abort',cancelHistory);}
 }
+
 function validCurrentQuotes(raw,wanted,now=Date.now()){
  const quotes=new Map();
  for(const id of wanted){const value=raw?.[CG_IDS[id]],p=value?.usd,t=value?.last_updated_at*1000;if(typeof p!=='number'||!Number.isFinite(p)||p<=0||!Number.isSafeInteger(t)||t>now+300000||now-t>1800000)throw Error('A current, timestamped quote was not returned for '+id+'.');quotes.set(id,{t,p});}
@@ -324,7 +345,7 @@ function applyCurrentQuotes(bundle,quotes){
   const base=first.p,points=[{t:start,p:base,r:0}];if(first.t>start)points.push({t:first.t,p:base,r:0});let gaps=0;
   for(const p of history){if(p.t<=first.t)continue;const gapBefore=p.gapBefore===true||p.t-points.at(-1).t>step*1.5;if(gapBefore)gaps++;points.push({t:p.t,p:p.p,r:(p.p/base-1)*100,...(gapBefore?{gapBefore:true}:{})});}
   if(quote.t>points.at(-1).t){const gapBefore=quote.t-points.at(-1).t>step*1.5;if(gapBefore)gaps++;points.push({t:quote.t,p:quote.p,r:(quote.p/base-1)*100,...(gapBefore?{gapBefore:true}:{})});}
-  data.push([id,{id,base,points,gaps,asOf:now}]);
+  data.push([id,{id,base,points,gaps,asOf:now,historySavedAt:d.historySavedAt||bundle.spec.historySavedAt||bundle.savedAt,historyObservedAt:d.historyObservedAt}]);
  }
  const next={spec:{...bundle.spec,start,end,quoteCheckedAt:now,historySavedAt:bundle.spec.historySavedAt||bundle.savedAt,saved:false},data,savedAt:now};
  if(!validBundle(next))throw Error('The refreshed quotes did not pass the chart data checks.');

@@ -35,14 +35,17 @@ export function acceptWindow(item,days,prices,now=Date.now()){
  const old=item.prices?.[days];
  if(old?.length&&prices.at(-1)[0]<old.at(-1)[0])throw Error('Provider response would replace newer observations');
  const windowUpdatedAt={31:item.windowUpdatedAt?.[31]??item.updatedAt,365:item.windowUpdatedAt?.[365]??item.updatedAt,[days]:now};
- return {...item,prices:{...item.prices,[days]:prices},windowUpdatedAt,updatedAt:windowUpdatedAt[31]};
+ // Retain only genuine older observations needed at the rolling window edge.
+ const prefix=Array.isArray(old)?old.filter(p=>p[0]<prices[0][0]&&p[0]>=now-(days+2)*24*HOUR):[];
+ const merged=[...prefix,...prices];validPrices(merged,now);
+ return {...item,prices:{...item.prices,[days]:merged},windowUpdatedAt,updatedAt:windowUpdatedAt[31]};
 }
 export function retryAt(value,now){
  if(!value)return now+60000;
  const n=Number(value),delay=Number.isFinite(n)?n*1000:Date.parse(value)-now;
  return now+Math.max(60000,Number.isFinite(delay)?delay:60000);
 }
-export function createClient({fetchImpl=fetch,now=()=>Date.now(),sleep=ms=>new Promise(r=>setTimeout(r,ms)),spacing=7500}={}){
+export function createClient({fetchImpl=fetch,now=()=>Date.now(),sleep=ms=>new Promise(r=>setTimeout(r,ms)),spacing=15000}={}){
  let last=-Infinity,cooldown=0;
  return async function get(url){
   if(new URL(url).origin!=='https://api.coingecko.com')throw Error('Unexpected provider');

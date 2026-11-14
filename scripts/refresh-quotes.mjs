@@ -1,9 +1,15 @@
-import {mkdir,writeFile} from 'node:fs/promises';
-const coins={BTC:'bitcoin',ETH:'ethereum',BNB:'binancecoin',XRP:'ripple',SOL:'solana',SHIB:'shiba-inu',KISHU:'kishu-inu',WKC:'wiki-cat',CREPE:'crepe-2'};
-const q=new URLSearchParams({ids:Object.values(coins).join(','),vs_currencies:'usd',include_last_updated_at:'true',precision:'full'});
-const response=await fetch('https://api.coingecko.com/api/v3/simple/price?'+q,{signal:AbortSignal.timeout(30000)});
-if(!response.ok)throw Error('Current quote source returned HTTP '+response.status);
-const quotes=await response.json(),now=Date.now();
-for(const [symbol,id]of Object.entries(coins)){const quote=quotes[id],t=quote?.last_updated_at*1000;if(typeof quote?.usd!=='number'||!Number.isFinite(quote.usd)||quote.usd<=0||!Number.isSafeInteger(t)||t>now+300000||now-t>1800000)throw Error('No fresh, timestamped quote for '+symbol);}
-await mkdir('data',{recursive:true});await writeFile('data/quotes.json',JSON.stringify({version:1,checkedAt:now,quotes}));
-console.log('Verified current quotes for '+Object.keys(coins).length+' coins at '+new Date(now).toISOString());
+import {mkdir,writeFile,readFile,rename} from 'node:fs/promises';
+import {COINS,mergeQuotes,createClient} from './market-data-core.mjs';
+await mkdir('data',{recursive:true});let previous={};
+try{const old=JSON.parse(await readFile('data/quotes.json','utf8'));if(old.version===1)previous=old;}catch{}
+const query=new URLSearchParams({ids:Object.values(COINS).join(','),vs_currencies:'usd',include_last_updated_at:'true',precision:'full'});
+let incoming={},received=false;
+try{incoming=await createClient()('https://api.coingecko.com/api/v3/simple/price?'+query);received=true;}catch(e){console.warn('Current quote refresh unavailable; retaining validated provider timestamps:',e.message);}
+const now=Date.now(),quotes=mergeQuotes(previous.quotes,incoming,now),missing=Object.entries(COINS).filter(([,id])=>!quotes[id]).map(([symbol])=>symbol);
+if(!received&&JSON.stringify(quotes)===JSON.stringify(previous.quotes)){
+ console.log('No newer quotes; the existing check time and data remain unchanged.');
+}else if(Object.keys(quotes).length){
+ const value={version:1,checkedAt:received?now:(previous.checkedAt||0),lastAttemptAt:now,quotes,unavailable:missing};
+ await writeFile('data/quotes.json.tmp',JSON.stringify(value));await rename('data/quotes.json.tmp','data/quotes.json');
+ console.log('Saved',Object.keys(quotes).length,'fresh timestamped quotes; unavailable:',missing.join(',')||'none');
+}else console.warn('No fresh quotes available; kept the previous dated file. Browsers reject stale observations.');
