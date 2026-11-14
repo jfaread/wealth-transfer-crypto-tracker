@@ -1,0 +1,75 @@
+name: Package verified phone alert deployment
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/package-alert-deployment.yml'
+permissions:
+  contents: write
+concurrency:
+  group: package-phone-alert-deployment
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.repository == 'jfaread/wealth-transfer-crypto-tracker'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.13.1'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Build the exact deployment bundle
+        run: npm run check:worker -- --minify
+      - name: Test the packaged Worker and alert logic
+        run: npm test
+      - name: Check the existing website and notification interface
+        run: |
+          npm run build
+          npm run test:charts
+          npm run test:alerts-browser
+      - name: Prepare integrity-checked deployment files
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import zlib from 'node:zlib';
+          const file='.worker-build/worker.js';
+          if (!fs.existsSync(file)) throw new Error('Expected Worker bundle is missing.');
+          const bytes=fs.readFileSync(file);
+          const sha256=crypto.createHash('sha256').update(bytes).digest('hex');
+          const compressed=zlib.gzipSync(bytes,{level:9});
+          const encoded=compressed.toString('base64');
+          fs.mkdirSync('deployment-artifacts',{recursive:true});
+          fs.writeFileSync('deployment-artifacts/worker.js',bytes);
+          const parts=[];
+          for(let i=0;i<encoded.length;i+=8000){
+            const name=`worker-gzip-part-${String(parts.length+1).padStart(2,'0')}.txt`;
+            const text=encoded.slice(i,i+8000);
+            fs.writeFileSync(`deployment-artifacts/${name}`,text+'\n');
+            parts.push({name,characters:text.length});
+          }
+          fs.writeFileSync('deployment-artifacts/manifest.json',JSON.stringify({sourceCommit:process.env.GITHUB_SHA,runId:process.env.GITHUB_RUN_ID,node:process.version,sha256,bytes:bytes.length,gzipBytes:compressed.length,parts},null,2)+'\n');
+          console.log(JSON.stringify({sha256,bytes:bytes.length,gzipBytes:compressed.length,parts:parts.length}));
+          NODE
+      - name: Save the tested public bundle on a separate deployment branch
+        run: |
+          git config user.name 'crypto-watch-build'
+          git config user.email 'crypto-watch-build@users.noreply.github.com'
+          BRANCH="deploy/alerts-${GITHUB_SHA:0:12}"
+          git checkout -b "$BRANCH"
+          git add deployment-artifacts
+          git commit -m "Verified alert deployment bundle for $GITHUB_SHA"
+          git push origin "HEAD:refs/heads/$BRANCH"
+          echo "Verified deployment branch: $BRANCH" >> "$GITHUB_STEP_SUMMARY"
+          echo "No Cloudflare credential or notification key is included in this package." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-phone-alert-deployment
+          path: deployment-artifacts/
+          retention-days: 7
