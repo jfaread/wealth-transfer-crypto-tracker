@@ -12,12 +12,13 @@ const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.jso
 
 (async()=>{
  const {applySiteCsp}=await import('../scripts/build-site.mjs');
+ const {COINS}=await import('../alerts/core.mjs');
  const {generateVAPIDKeys}=await import('web-push');
  const vapid=generateVAPIDKeys();
  const html=await fs.readFile('_site/index.html','utf8');
  const browser=await chromium.launch(require('./browser-launch.cjs')());
  const cors={'Access-Control-Allow-Origin':'https://jfaread.github.io','Access-Control-Allow-Headers':'Content-Type,Authorization','Access-Control-Allow-Methods':'GET,POST,PUT,DELETE,OPTIONS'};
- const config=()=>({version:1,enabled:true,vapidPublicKey:vapid.publicKey,coins:IDS.map((id,i)=>({id,name:id,enabled:i<5,source:i<5?'Kraken '+id+'/USD':null,maxAgeMs:60000,reason:i<5?null:'The exact token live feed is still being verified.'}))});
+ const config=(unavailable=[])=>({version:1,enabled:true,vapidPublicKey:vapid.publicKey,coins:IDS.map(id=>({id,name:id,enabled:!unavailable.includes(id),source:COINS[id].source,maxAgeMs:60000,reason:unavailable.includes(id)?'Waiting for a fresh, verified source observation.':null}))});
 
  async function mockBrowser(context){
   await context.addInitScript(({site,key})=>{
@@ -119,7 +120,7 @@ const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.jso
     records.push(method+' '+path);
     if(path==='/v1/config'){
      if(registered&&failFreshConfig)return reply(route,{error:{code:'temporarily_unavailable'}},503);
-     const value=config();
+     const value=config(['KISHU']);
      if(!registered)value.coins=value.coins.map(coin=>({...coin,enabled:false,reason:coin.enabled?'Waiting for the first fresh quote.':coin.reason}));
      return reply(route,value);
     }
@@ -160,14 +161,14 @@ const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.jso
 
   const context=await browser.newContext({viewport:{width:390,height:900},reducedMotion:'reduce'});
   await mockBrowser(context);
-  let registered=false,revision=0,saved=[],conflict=false,failDelete=true,testRequests=0;
+  let registered=false,revision=0,saved=[],conflict=false,failDelete=true,testRequests=0,unavailable=[];
   const records=[];
   const reply=(route,value,status=200)=>route.fulfill({status,contentType:'application/json',headers:cors,body:JSON.stringify(value)});
   const monitor={status:'live',lastObservedAt:Date.now(),message:'Monitoring fresh USD quotes. Delivery is best effort.'};
   await mount(context,true,async route=>{
    const req=route.request(),path=new URL(req.url()).pathname,method=req.method();
    records.push({path,method});assert.equal(new URL(req.url()).search,'');
-   if(path==='/v1/config')return reply(route,config());
+   if(path==='/v1/config')return reply(route,config(unavailable));
    if(path==='/v1/devices'&&method==='POST'){
     const input=req.postDataJSON();assert.equal(input.consentVersion,'2026-11-13');assert(input.operationId);assert(input.subscription.endpoint.endsWith('/qa-only'));
     registered=true;return reply(route,{deviceId:DEVICE,token:TOKEN,rules:[],revision:0},201);
@@ -194,9 +195,21 @@ const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.jso
   await page.locator('#wa-connect').click();await page.getByText(/^This device is connected\. 0 enabled rules/).waitFor();
   assert.equal(await page.evaluate(()=>window.__alertProbe.subscriptions),1);
   await add(page,'BTC','100.0000');assert.equal(saved[0].threshold,'100');
-  await add(page,'KISHU','0.0000000001');assert.equal(saved.length,1);assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),1);
-  conflict=true;await add(page,'ETH','2000');assert.equal(saved.length,1);assert.match(await page.locator('#wa-message').innerText(),/latest list has been loaded/);
-  await page.locator('#wa-save-rule').click();await page.waitForFunction(()=>document.getElementById('wtct-alerts-dialog').getAttribute('aria-busy')==='false');assert.equal(saved.length,2);
+  for(const [coin,threshold] of [['KISHU','0.0000000001'],['WKC','0.00000001'],['CREPE','0.000001']]){
+   await add(page,coin,threshold);
+   assert.deepEqual({coin:saved.at(-1).coin,threshold:saved.at(-1).threshold},{coin,threshold});
+   assert.match(await page.locator('#wa-coin-note').innerText(),/indicative pool price in USD, checked about every 15 seconds/);
+  }
+  assert.equal(saved.length,4);assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),0);
+  await page.locator('#wa-source-details summary').click();
+  assert.match(await page.locator('#wa-sources').innerText(),/KISHU: Indicative Uniswap v2 KISHU\/WETH/);
+  assert.match(await page.locator('#wa-sources').innerText(),/CREPE: Indicative PancakeSwap v2 CREPE\/WBNB/);
+  unavailable=['KISHU'];
+  await page.locator('#wa-refresh').click();await page.waitForFunction(()=>document.getElementById('wtct-alerts-dialog').getAttribute('aria-busy')==='false');
+  await add(page,'KISHU','0.0000000002');assert.equal(saved.length,4);assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),1);
+  assert.match(await page.locator('#wa-sources').innerText(),/KISHU: Indicative Uniswap v2 KISHU\/WETH.*Currently unavailable/);
+  conflict=true;await add(page,'ETH','2000');assert.equal(saved.length,4);assert.match(await page.locator('#wa-message').innerText(),/latest list has been loaded/);
+  await page.locator('#wa-save-rule').click();await page.waitForFunction(()=>document.getElementById('wtct-alerts-dialog').getAttribute('aria-busy')==='false');assert.equal(saved.length,5);
   await page.locator('#wa-test').click();await page.getByText(/Test notification requested/).waitFor();assert.equal(testRequests,1);
   await page.locator('#wa-close').click();
   const foreground={type:'wtct-price-alert',version:1,eventId:'qa-foreground-1',title:'BTC price alert',body:'BTC crossed above US$100. Observed US$101 on Kraken BTC/USD.',url:SITE,observedAt:Date.now(),expiresAt:Date.now()+120000,expired:false};
@@ -217,6 +230,6 @@ const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.jso
   assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),1);
   assert(records.some(x=>x.path==='/v1/rules'&&x.method==='PUT'));
   await context.close();
-  console.log('PASS: two-step permission, device registration, remote save, unavailable-token draft, revision conflict, test request, foreground banner, duplicate suppression, failed opt-out recovery and successful deletion. All messaging is mocked.');
+  console.log('PASS: two-step permission, device registration, exact pool-token thresholds, indicative sources, temporarily unavailable-token draft, revision conflict, test request, foreground banner, duplicate suppression, failed opt-out recovery and successful deletion. All messaging is mocked.');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

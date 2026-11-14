@@ -1,5 +1,6 @@
 import {COINS, normaliseRule, evaluateRule, validateQuote} from './core.mjs';
 import {LIVE_COINS, parseKrakenMessage, connectKraken, reconnectDelay} from './feeds.mjs';
+import {POOL_COINS, POOL_POLL_MS, MAX_RPC_REQUESTS_PER_POLL, POOL_SOURCES, pollPoolPrices} from './pool-feeds.mjs';
 import {validateSubscription, sendPush} from './webpush.mjs';
 
 const SITE_URL = 'https://jfaread.github.io/wealth-transfer-crypto-tracker/';
@@ -11,6 +12,10 @@ const MAX_BODY = 24_000;
 const EVENT_TTL = 120_000;
 const DEVICE_TTL = 90 * 86_400_000;
 const DEFAULT_FRAME_CAP = 1_000_000;
+const MAX_POOL_POLLS = 6_000;
+const ALL_COINS = [...LIVE_COINS, ...POOL_COINS];
+const POOL_NETWORKS = {ethereum: ['KISHU'], bsc: ['WKC', 'CREPE']};
+const CONVERSION_COINS = {ethereum: 'ETH', bsc: 'BNB'};
 const encoder = new TextEncoder();
 
 class ApiError extends Error {
@@ -23,6 +28,34 @@ const dayKey = now => new Date(now).toISOString().slice(0, 10);
 const clone = value => structuredClone(value);
 const boundedInt = (value, fallback, max) => Number.isInteger(Number(value)) && Number(value) > 0
   ? Math.min(Number(value), max) : fallback;
+
+function cleanHead(value, network, now) {
+  if (!value || !/^\d{1,32}$/.test(value.number || '') || !/^0x[a-f\d]{64}$/i.test(value.hash || '') ||
+      !Number.isSafeInteger(value.timestamp) || value.timestamp <= 0 || value.timestamp > now + 5_000 ||
+      !Number.isSafeInteger(value.observedAt) || value.observedAt <= 0 || value.observedAt > now + 5_000) return null;
+  return {number: value.number, hash: value.hash, timestamp: value.timestamp, observedAt: value.observedAt,
+    healthy: value.healthy === true,
+    coinObservedAt: Object.fromEntries(POOL_NETWORKS[network].filter(coin => Number.isSafeInteger(value.coinObservedAt?.[coin]) &&
+      value.coinObservedAt[coin] > 0 && value.coinObservedAt[coin] <= now + 5_000).map(coin => [coin, value.coinObservedAt[coin]]))};
+}
+
+function cleanEvidence(value, coin, now) {
+  const network = COINS[coin].network, conversion = CONVERSION_COINS[network];
+  if (!value || value.indicative !== true || value.network !== network || value.conversionCoin !== conversion ||
+      value.chainId !== (network === 'ethereum' ? 1 : 56) ||
+      value.token?.toLowerCase() !== COINS[coin].contract.toLowerCase() ||
+      !/^0x[a-f\d]{40}$/i.test(value.pool || '') || !/^0x[a-f\d]{40}$/i.test(value.quoteToken || '') ||
+      !/^\d{1,32}$/.test(value.blockNumber || '') || !/^0x[a-f\d]{64}$/i.test(value.blockHash || '') ||
+      value.conversionSource !== `Kraken ${conversion}/USD` ||
+      !Number.isInteger(value.tokenDecimals) || value.tokenDecimals < 0 || value.tokenDecimals > 36 ||
+      !Number.isInteger(value.quoteDecimals) || value.quoteDecimals < 0 || value.quoteDecimals > 36 ||
+      !Number.isSafeInteger(value.freshUntil) || !/^\d{1,18}(?:\.\d{1,24})?$/.test(value.conversionPrice || '')) return null;
+  const fields = ['blockTimestamp', 'reserveChangedAt', 'observedAt', 'conversionTimestamp', 'conversionReceivedAt'];
+  if (fields.some(key => !Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > now + 5_000)) return null;
+  return Object.fromEntries(['network', 'chainId', 'pool', 'token', 'quoteToken', 'tokenDecimals', 'quoteDecimals',
+    'blockNumber', 'blockHash', ...fields, 'conversionCoin', 'conversionSource', 'conversionPrice', 'freshUntil', 'indicative']
+    .map(key => [key, key === 'chainId' ? (network === 'ethereum' ? 1 : 56) : value[key]]));
+}
 
 function hex(bytes) { return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''); }
 async function hash(value) { return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value)))); }
@@ -115,6 +148,7 @@ export class CryptoAlertMonitor {
     this.now = dependencies.now || (() => Date.now());
     this.send = dependencies.sendPush || sendPush;
     this.connect = dependencies.connectKraken || connectKraken;
+    this.poll = dependencies.pollPoolPrices || pollPoolPrices;
     this.fetchImpl = dependencies.fetchImpl || globalThis.fetch;
     this.devices = new Map();
     this.states = new Map();
@@ -134,6 +168,11 @@ export class CryptoAlertMonitor {
     this.lastCheckpoint = 0;
     this.draining = false;
     this.feedStatus = 'waiting';
+    this.poolPolling = false;
+    this.poolGeneration = {ethereum: 0, bsc: 0};
+    this.poolHeads = {};
+    this.poolEvidence = {};
+    this.poolNetworks = Object.fromEntries(Object.keys(POOL_NETWORKS).map(network => [network, {nextPollAt: 0, failures: 0, reason: null}]));
     this.ready = this.load();
     if (ctx.blockConcurrencyWhile) ctx.blockConcurrencyWhile(() => this.ready);
   }
@@ -152,6 +191,27 @@ export class CryptoAlertMonitor {
     }
     this.usage = saved.get('usage') || {day: dayKey(this.now()), count: 0};
     this.feedBudget = saved.get('feedBudget') || {day: dayKey(this.now()), reserved: 0};
+    const poolBudget = saved.get('poolBudget');
+    this.poolBudget = poolBudget && /^\d{4}-\d{2}-\d{2}$/.test(poolBudget.day || '') && Number.isSafeInteger(poolBudget.reserved) && poolBudget.reserved >= 0
+      ? {day: poolBudget.day, reserved: Math.min(MAX_POOL_POLLS, poolBudget.reserved)}
+      : {day: dayKey(this.now()), reserved: poolBudget ? MAX_POOL_POLLS : 0};
+    const poolState = saved.get('poolState');
+    if (poolState?.version === 1) {
+      this.probeUntil = Number.isSafeInteger(poolState.probeUntil) ? Math.min(this.now() + 300_000, poolState.probeUntil) : 0;
+      for (const network of Object.keys(POOL_NETWORKS)) {
+        const state = poolState.networks?.[network];
+        if (state) this.poolNetworks[network] = {
+          nextPollAt: Number.isSafeInteger(state.nextPollAt) && state.nextPollAt > 0 ? state.nextPollAt : 0,
+          failures: Number.isInteger(state.failures) ? Math.min(10, Math.max(0, state.failures)) : 0,
+          reason: /^[a-z_]{1,64}$/.test(state.reason || '') ? state.reason : null};
+        const head = cleanHead(poolState.heads?.[network], network, this.now());
+        if (head) this.poolHeads[network] = {...head, healthy: false};
+      }
+      for (const coin of POOL_COINS) {
+        const evidence = cleanEvidence(poolState.evidence?.[coin], coin, this.now());
+        if (evidence) this.poolEvidence[coin] = evidence;
+      }
+    }
     if (this.budgetPaused()) this.feedStatus = 'budget_paused';
   }
 
@@ -174,8 +234,10 @@ export class CryptoAlertMonitor {
       const path = new URL(request.url).pathname;
       if (request.method === 'GET' && path === '/v1/config') {
         if (isActive(this.env)) {
-          if (!this.hasActiveRules() && this.probeUntil <= this.now()) this.probeUntil = this.now() + 300_000;
-          this.background(this.ensureFeed());
+          await this.locked(async () => {
+            if (!this.hasActiveRules() || POOL_COINS.some(coin => !this.freshQuote(coin))) await this.startProbe();
+          });
+          this.background(this.ensureSources());
         }
         return json(this.config());
       }
@@ -187,7 +249,7 @@ export class CryptoAlertMonitor {
       if (!['/v1/device', '/v1/rules', '/v1/test'].includes(path)) throw new ApiError(404, 'not_found', 'Not found.');
       const deviceId = await this.authenticate(request);
       if (request.method === 'GET' && path === '/v1/device') {
-        if (isActive(this.env)) this.background(this.ensureFeed());
+        if (isActive(this.env)) this.background(this.ensureSources());
         return json(publicDevice(this.devices.get(deviceId), this.monitor()));
       }
       if (request.method === 'DELETE' && path === '/v1/device') return await this.locked(() => this.remove(deviceId));
@@ -213,45 +275,95 @@ export class CryptoAlertMonitor {
   monitor() {
     const now = this.now();
     const paused = this.budgetPaused();
-    const fresh = paused ? [] : LIVE_COINS.filter(coin => {
-      const q = this.quotes.get(coin);
-      return q && validateQuote(q, now).valid;
-    });
-    return {status: !isActive(this.env) ? 'disabled' : paused ? 'budget_paused' : fresh.length === LIVE_COINS.length ? 'live'
+    const fresh = paused ? [] : ALL_COINS.filter(coin => this.freshQuote(coin, now));
+    return {status: !isActive(this.env) ? 'disabled' : paused ? 'budget_paused' : fresh.length === ALL_COINS.length ? 'live'
       : fresh.length ? 'partial' : this.feedStatus,
-    source: 'Kraken USD spot ticker', lastObservedAt: Math.max(0, ...Array.from(this.quotes.values(), q => q.timestamp)) || null,
-    freshCoins: fresh, unavailableCoins: ['KISHU', 'WKC', 'CREPE'],
+    source: 'Kraken USD spot tickers and indicative selected-pool USD prices',
+    lastObservedAt: Math.max(0, ...fresh.map(coin => this.quotes.get(coin).timestamp)) || null,
+    freshCoins: fresh, unavailableCoins: ALL_COINS.filter(coin => !fresh.includes(coin)),
     frameBudgetRemaining: this.feedBudget?.day === dayKey(now)
       ? Math.max(0, this.frameCap() - this.feedBudget.reserved + this.frameAllowance) : this.frameCap(),
+    poolPollsRemaining: this.poolBudget?.day === dayKey(now) ? Math.max(0, this.poolCap() - this.poolBudget.reserved) : this.poolCap(),
+    poolPollingIntervalMs: POOL_POLL_MS,
+    poolNetworks: clone(this.poolNetworks),
     message: !isActive(this.env) ? 'The alert service has not been activated.'
       : paused ? 'The free live-price allowance has been reached. Monitoring resumes after 00:00 UTC with a fresh baseline.'
-      : fresh.length === LIVE_COINS.length ? 'Monitoring fresh USD quotes. Delivery is best effort.'
-      : 'Waiting for fresh prices. Alerts are paused for coins without a fresh quote.'};
+      : this.poolBudgetPaused() ? 'The free pool-price allowance has been reached. Pool alerts resume after 00:00 UTC with a fresh baseline; available Kraken alerts continue.'
+      : 'Pool prices are indicative USD values from selected pools, sampled about every 15 seconds. Coins without fresh prices are paused. Notification delivery is best effort, not instantaneous.'};
   }
 
   config() {
     const active = isActive(this.env), now = this.now(), paused = this.budgetPaused();
     const coins = Object.entries(COINS).map(([id, info]) => {
-      const supported = LIVE_COINS.includes(id), quote = this.quotes.get(id);
-      const fresh = quote && validateQuote(quote, now).valid;
+      const pool = POOL_COINS.includes(id), supported = ALL_COINS.includes(id);
+      const fresh = this.freshQuote(id, now), schedule = pool ? this.poolNetworks[info.network] : null;
       return {id, name: info.name || id, enabled: !!(active && !paused && supported && fresh),
-        source: supported ? `Kraken ${id}/USD` : null, maxAgeMs: supported ? 60_000 : null,
-        reason: !supported ? 'A dependable live feed for this exact token is still being verified. You can save a disabled draft.'
+        source: pool ? POOL_SOURCES[id] : `Kraken ${id}/USD`, maxAgeMs: supported ? 60_000 : null,
+        indicative: pool, samplingMs: pool ? POOL_POLL_MS : null,
+        ...(pool ? {evidence: this.poolEvidence[id] || null, nextPollAt: schedule.nextPollAt || null} : {}),
+        reason: !supported ? 'A dependable price source is not available for this token.'
           : !active ? 'The alert service is not live yet.' : paused ? 'The free live-price allowance has been reached. Monitoring resumes after 00:00 UTC.'
-            : !fresh ? 'Waiting for a fresh price from the live feed.' : null};
+            : pool && this.poolBudgetPaused() ? 'The free pool-price allowance has been reached. Pool monitoring resumes after 00:00 UTC.'
+              : pool && !fresh ? 'Waiting for a fresh validated pool observation and its ETH or BNB USD conversion. Pool prices are indicative, sampled about every 15 seconds.'
+                : !fresh ? 'Waiting for a fresh price from the live feed.' : null};
     });
     return {version: 1, enabled: active, vapidPublicKey: active ? this.env.VAPID_PUBLIC_KEY : null,
       siteUrl: SITE_URL, consentVersion: CONSENT_VERSION, coins,
       capabilities: Object.fromEntries(coins.map(c => [c.id, {available: c.enabled, reason: c.reason, source: c.source}])),
       limits: {maxDevices: boundedInt(this.env.MAX_DEVICES, 50, 50), maxRules: MAX_RULES,
-        maxPushesPerDevicePerDay: 20, maxPushesPerDay: 200, maxFeedFramesPerDay: this.frameCap()}, monitor: this.monitor()};
+        maxPushesPerDevicePerDay: 20, maxPushesPerDay: 200, maxFeedFramesPerDay: this.frameCap(),
+        maxPoolPollsPerDay: this.poolCap(), maxPoolRpcRequestsPerPoll: MAX_RPC_REQUESTS_PER_POLL}, monitor: this.monitor()};
+  }
+
+  freshQuote(coin, now = this.now()) {
+    return !this.budgetPaused() && (!POOL_COINS.includes(coin) || !this.poolBudgetPaused()) &&
+      validateQuote(this.quotes.get(coin), now).valid;
   }
 
   hasActiveRules() { return Array.from(this.devices.values()).some(device => device.rules.some(rule => rule.enabled)); }
-  needsFeed() { return this.hasActiveRules() || this.probeUntil > this.now(); }
+  needsFeed() {
+    return this.probeUntil > this.now() || Array.from(this.devices.values()).some(device =>
+      device.rules.some(rule => rule.enabled && (LIVE_COINS.includes(rule.coin) || !this.poolBudgetPaused())));
+  }
   frameCap() { return boundedInt(this.env.MAX_FEED_FRAMES_PER_DAY, DEFAULT_FRAME_CAP, DEFAULT_FRAME_CAP); }
+  poolCap() { return boundedInt(this.env.MAX_POOL_POLLS_PER_DAY, MAX_POOL_POLLS, MAX_POOL_POLLS); }
+  poolBudgetPaused() { return this.poolBudget?.day === dayKey(this.now()) && this.poolBudget.reserved >= this.poolCap(); }
   budgetPaused() {
     return this.feedBudget?.day === dayKey(this.now()) && this.feedBudget.reserved >= this.frameCap() && this.frameAllowance <= 0;
+  }
+
+  poolState() {
+    return {version: 1, probeUntil: this.probeUntil, networks: this.poolNetworks, heads: this.poolHeads, evidence: this.poolEvidence};
+  }
+
+  async startProbe() {
+    if (this.probeUntil > this.now()) return;
+    const until = this.now() + 300_000;
+    await this.ctx.storage.put('poolState', {...this.poolState(), probeUntil: until});
+    this.probeUntil = until;
+  }
+
+  neededPoolCoins() {
+    if (this.probeUntil > this.now()) return [...POOL_COINS];
+    const needed = new Set();
+    for (const device of this.devices.values()) for (const rule of device.rules) {
+      if (rule.enabled && POOL_COINS.includes(rule.coin)) needed.add(rule.coin);
+    }
+    return [...needed];
+  }
+
+  invalidateCoins(coins) {
+    const affected = new Set(coins);
+    for (const coin of affected) this.quotes.delete(coin);
+    for (const [id, device] of this.devices) {
+      const states = {...(this.states.get(id) || {})};
+      for (const rule of device.rules) if (affected.has(rule.coin) && states[rule.id]) states[rule.id] = {...states[rule.id], needsBaseline: true};
+      this.states.set(id, states);
+    }
+  }
+
+  expirePoolQuotes(now = this.now()) {
+    this.invalidateCoins(POOL_COINS.filter(coin => this.quotes.has(coin) && !validateQuote(this.quotes.get(coin), now).valid));
   }
 
   async resetFrameDay() {
@@ -290,16 +402,34 @@ export class CryptoAlertMonitor {
     if (!accepted) return;
     const parsed = parseKrakenMessage(raw, this.now());
     if (parsed.reason === 'subscription_rejected' && !this.budgetPaused()) this.feedStatus = 'unavailable';
-    if (parsed.quotes.length) { await this.processQuotes(parsed.quotes); await this.drainOutbox(); }
+    if (parsed.quotes.length) {
+      await this.processQuotes(parsed.quotes); await this.drainOutbox();
+      if (parsed.quotes.some(quote => ['ETH', 'BNB'].includes(quote.coin))) this.background(this.ensurePools());
+    }
   }
 
   async planWake() {
     const now = this.now();
     const targets = Array.from(this.pending.values(), job => Math.min(job.nextAttemptAt, job.expiresAt));
-    if (this.budgetPaused() && (this.hasActiveRules() || this.needsFeed())) targets.push(Date.parse(`${dayKey(now)}T00:00:00.000Z`) + 86_400_000);
-    else if (this.needsFeed()) targets.push(now + 15_000);
-    if (!targets.length) { await this.ctx.storage.deleteAlarm(); return; }
-    await this.ctx.storage.setAlarm(Math.max(now + 250, Math.min(...targets)));
+    const nextDay = Date.parse(`${dayKey(now)}T00:00:00.000Z`) + 86_400_000;
+    if (this.budgetPaused() && (this.hasActiveRules() || this.needsFeed())) targets.push(nextDay);
+    else {
+      if (this.needsFeed()) targets.push(now + 15_000);
+      const needed = this.neededPoolCoins();
+      if (needed.length && this.poolBudgetPaused()) targets.push(nextDay);
+      else for (const [network, coins] of Object.entries(POOL_NETWORKS)) {
+        if (coins.some(coin => needed.includes(coin))) {
+          const next = this.poolNetworks[network].nextPollAt;
+          targets.push(next > now ? next : now + POOL_POLL_MS);
+        }
+      }
+      if (this.probeUntil > now) targets.push(this.probeUntil);
+    }
+    const existing = await this.ctx.storage.getAlarm();
+    if (!targets.length) { if (existing != null) await this.ctx.storage.deleteAlarm(); return; }
+    const when = Math.max(now + 250, Math.min(...targets));
+    const onlyDailyReset = this.pending.size === 0 && (this.budgetPaused() || (!this.needsFeed() && this.poolBudgetPaused()));
+    if (existing == null || existing <= now || when < existing || (onlyDailyReset && existing !== when)) await this.ctx.storage.setAlarm(when);
   }
 
   async authenticate(request) {
@@ -340,9 +470,9 @@ export class CryptoAlertMonitor {
     });
     this.devices.set(id, device); this.states.set(id, {});
     this.operations.set(operationKey, operation); this.ipBuckets.set(ipKey, bucket);
-    this.probeUntil = this.now() + 300_000;
+    await this.startProbe();
     await this.scheduleAlarm(now + 15_000);
-    this.background(this.ensureFeed());
+    this.background(this.ensureSources());
     return json({deviceId: id, token: `${id}.${secret}`, rules: [], revision: 0}, 201);
   }
 
@@ -358,11 +488,14 @@ export class CryptoAlertMonitor {
       try { rule = normaliseRule({...input, id: input?.id || crypto.randomUUID()}); }
       catch (error) { throw new ApiError(400, 'invalid_rule', error.message || 'Check the coin and threshold.'); }
       if (rules.some(existing => existing.id === rule.id)) throw new ApiError(400, 'duplicate_rule', 'Each alert must have a different identifier.');
-      if (rule.enabled && !LIVE_COINS.includes(rule.coin)) throw new ApiError(400, 'feed_not_ready', 'This token’s live feed is still being verified. Save the alert as a disabled draft.');
-      if (rule.enabled && this.budgetPaused()) throw new ApiError(409, 'feed_budget_paused', 'The free live-price allowance has been reached. Save a disabled draft or try again after 00:00 UTC.');
-      if (rule.enabled && !validateQuote(this.quotes.get(rule.coin), this.now()).valid) {
-        if (!this.needsFeed()) this.probeUntil = this.now() + 300_000;
-        this.background(this.ensureFeed());
+      const previous = current.rules.find(existing => existing.id === rule.id);
+      const activating = rule.enabled && (!previous || JSON.stringify(previous) !== JSON.stringify(rule));
+      if (activating && !ALL_COINS.includes(rule.coin)) throw new ApiError(400, 'feed_not_ready', 'A verified price source is not available. Save the alert as a disabled draft.');
+      if (activating && this.budgetPaused()) throw new ApiError(409, 'feed_budget_paused', 'The free live-price allowance has been reached. Save a disabled draft or try again after 00:00 UTC.');
+      if (activating && POOL_COINS.includes(rule.coin) && this.poolBudgetPaused()) throw new ApiError(409, 'daily_pool_limit', 'The free pool-price allowance has been reached. Available Kraken alerts continue; pool monitoring resumes after 00:00 UTC.');
+      if (activating && !this.freshQuote(rule.coin)) {
+        await this.startProbe();
+        this.background(this.ensureSources());
         throw new ApiError(409, 'price_not_ready', 'A fresh live price is not available yet. Wait a few seconds and try again, or save a disabled draft.');
       }
       rules.push(rule);
@@ -388,7 +521,12 @@ export class CryptoAlertMonitor {
     this.devices.delete(id); this.states.delete(id);
     for (const [key, operation] of this.operations) if (operation.deviceId === id) this.operations.delete(key);
     for (const [key, job] of this.pending) if (job.deviceId === id) this.pending.delete(key);
-    if (!this.devices.size) { this.closeFeed(); await this.ctx.storage.deleteAlarm(); }
+    if (!this.devices.size) {
+      this.probeUntil = 0;
+      this.closeFeed();
+      await this.ctx.storage.put('poolState', this.poolState());
+      await this.ctx.storage.deleteAlarm();
+    }
     return json({deleted: true});
   }
 
@@ -409,6 +547,139 @@ export class CryptoAlertMonitor {
     return json({eventId, status: 'queued'}, 202);
   }
 
+  async ensureSources() {
+    await this.ensureFeed();
+    await this.ensurePools();
+  }
+
+  async preparePoolRound() {
+    const now = this.now(), today = dayKey(now);
+    this.expirePoolQuotes(now);
+    if (this.poolBudget.day !== today) {
+      this.poolBudget = {day: today, reserved: 0};
+      await this.ctx.storage.put('poolBudget', this.poolBudget);
+      this.invalidateCoins(POOL_COINS);
+      for (const network of Object.keys(this.poolHeads)) this.poolHeads[network].healthy = false;
+    }
+    if (!isActive(this.env) || this.budgetPaused() || this.poolBudgetPaused()) {
+      this.invalidateCoins(POOL_COINS);
+      return null;
+    }
+    const needed = this.neededPoolCoins(), coins = [], networks = [], conversions = {};
+    let changed = false;
+    const schedule = clone(this.poolNetworks);
+    for (const [network, candidates] of Object.entries(POOL_NETWORKS)) {
+      const selected = candidates.filter(coin => needed.includes(coin));
+      if (!selected.length || now < schedule[network].nextPollAt) continue;
+      schedule[network].nextPollAt = now + POOL_POLL_MS;
+      changed = true;
+      const conversion = this.quotes.get(CONVERSION_COINS[network]);
+      if (!validateQuote(conversion, now).valid ||
+          Math.min(conversion.timestamp + 60_000, conversion.receivedAt + 30_000, conversion.freshUntil ?? Infinity) <= now) {
+        this.invalidateCoins(candidates);
+        if (this.poolHeads[network]) this.poolHeads[network].healthy = false;
+        schedule[network].reason = 'conversion_unavailable';
+        continue;
+      }
+      coins.push(...selected); networks.push(network);
+      conversions[CONVERSION_COINS[network]] = clone(conversion);
+    }
+    if (!coins.length) {
+      if (changed) {
+        await this.ctx.storage.put('poolState', {...this.poolState(), networks: schedule});
+        this.poolNetworks = schedule;
+      }
+      return null;
+    }
+    const budget = {...this.poolBudget, reserved: this.poolBudget.reserved + 1};
+    // Reserve the round and its next eligible times atomically before HTTP.
+    // A terminated attempt consumes its reservation rather than resetting it.
+    await this.ctx.storage.transaction(async tx => {
+      await tx.put('poolBudget', budget);
+      await tx.put('poolState', {...this.poolState(), networks: schedule});
+    });
+    this.poolBudget = budget; this.poolNetworks = schedule;
+    return {coins, networks, conversionQuotes: conversions, heads: clone(this.poolHeads), generations: {...this.poolGeneration}};
+  }
+
+  async applyPoolResult(round, result) {
+    const now = this.now(), inputs = [];
+    this.expirePoolQuotes(now);
+    const wanted = this.neededPoolCoins();
+    if (!isActive(this.env) || this.budgetPaused() || !wanted.length) {
+      this.invalidateCoins(round.coins);
+      return inputs;
+    }
+    const shape = result && Array.isArray(result.quotes) && result.quotes.length <= POOL_COINS.length &&
+      Array.isArray(result.errors) && result.errors.length <= 3 && Array.isArray(result.resetCoins);
+    const errors = shape ? result.errors : round.networks.map(network => ({network, coins: POOL_NETWORKS[network], reason: 'pool_unavailable'}));
+    if (shape) this.invalidateCoins(result.resetCoins.filter(coin => round.coins.includes(coin)));
+    for (const network of round.networks) {
+      const selected = round.coins.filter(coin => POOL_NETWORKS[network].includes(coin));
+      const error = errors.find(item => item?.network === network);
+      const head = cleanHead(shape ? result.heads?.[network] : null, network, now);
+      const changedConversion = round.generations[network] !== this.poolGeneration[network];
+      const accepted = [];
+      for (const coin of selected) {
+        const input = shape && result.quotes.find(quote => quote?.coin === coin);
+        const evidence = shape && cleanEvidence(result.evidence?.[coin], coin, now);
+        if (!wanted.includes(coin) || error || !head?.healthy || changedConversion || !input || !evidence ||
+            input.source !== POOL_SOURCES[coin] || !Number.isSafeInteger(input.freshUntil) ||
+            evidence.freshUntil !== input.freshUntil || !validateQuote(input, now).valid) {
+          this.invalidateCoins([coin]);
+          continue;
+        }
+        this.poolEvidence[coin] = evidence;
+        accepted.push(input);
+      }
+      if (head) this.poolHeads[network] = {...head, healthy: head.healthy && !changedConversion && !error};
+      if (accepted.length === selected.length && !error) {
+        this.poolNetworks[network] = {...this.poolNetworks[network], failures: 0, reason: null};
+        inputs.push(...accepted);
+      } else {
+        // Chain failures never alter the other network's independent interval.
+        const failures = Math.min(10, this.poolNetworks[network].failures + 1);
+        const retryAt = Number.isSafeInteger(error?.retryAt) && error.retryAt > now ? error.retryAt : 0;
+        this.poolNetworks[network] = {failures,
+          nextPollAt: Math.max(this.poolNetworks[network].nextPollAt, now + Math.min(300_000, POOL_POLL_MS * 2 ** (failures - 1)), retryAt),
+          reason: /^[a-z_]{1,64}$/.test(error?.reason || '') ? error.reason : 'pool_unavailable'};
+        this.invalidateCoins(selected);
+        if (this.poolHeads[network]) this.poolHeads[network].healthy = false;
+      }
+    }
+    await this.ctx.storage.put('poolState', this.poolState());
+    return inputs;
+  }
+
+  async ensurePools() {
+    await this.ready;
+    const needed = this.neededPoolCoins(), now = this.now();
+    if (this.poolPolling || !isActive(this.env) || this.budgetPaused() || !needed.length) return;
+    if (this.poolBudget.day === dayKey(now) && (this.poolBudgetPaused() ||
+        Object.entries(POOL_NETWORKS).every(([network, coins]) => !coins.some(coin => needed.includes(coin)) || this.poolNetworks[network].nextPollAt > now))) return;
+    this.poolPolling = true;
+    try {
+      const round = await this.locked(() => this.preparePoolRound());
+      if (!round) return;
+      let requests = 0, result;
+      const fetchImpl = this.fetchImpl;
+      try {
+        result = await this.poll({now: this.now, conversionQuotes: round.conversionQuotes, heads: round.heads, coins: round.coins,
+          fetchImpl: (...args) => {
+            if (++requests > MAX_RPC_REQUESTS_PER_POLL) throw new Error('Pool HTTP request limit reached.');
+            return fetchImpl(...args);
+          }});
+      } catch { result = null; }
+      const inputs = await this.locked(() => this.applyPoolResult(round, result));
+      if (inputs.length) await this.processQuotes(inputs, round.generations);
+      // Provider delivery must not hold the price-source single-flight guard.
+      this.background(this.drainOutbox());
+    } finally {
+      this.poolPolling = false;
+      await this.planWake();
+    }
+  }
+
   async ensureFeed() {
     await this.locked(() => this.resetFrameDay());
     if (this.budgetPaused()) { this.feedStatus = 'budget_paused'; await this.planWake(); return; }
@@ -425,6 +696,7 @@ export class CryptoAlertMonitor {
         onClose: () => {
           if (generation !== this.connectionGeneration) return;
           this.socket = null; this.feedStatus = 'recovering';
+          this.resetPoolConversions();
           this.nextReconnectAt = this.now() + reconnectDelay(this.reconnectAttempts++);
           this.background(this.scheduleAlarm(this.nextReconnectAt));
         }});
@@ -432,6 +704,7 @@ export class CryptoAlertMonitor {
       this.socket = socket; this.reconnectAttempts = 0; this.feedStatus = 'waiting_for_prices';
     } catch {
       this.feedStatus = 'recovering';
+      this.resetPoolConversions();
       this.nextReconnectAt = this.now() + reconnectDelay(this.reconnectAttempts++);
     } finally {
       this.connecting = false;
@@ -443,16 +716,42 @@ export class CryptoAlertMonitor {
     ++this.connectionGeneration;
     try { this.socket?.close(1000, 'Monitor paused'); } catch {}
     this.socket = null; this.feedStatus = 'waiting';
+    this.resetPoolConversions();
   }
 
-  async processQuotes(quotes) {
+  resetPoolConversions(conversion) {
+    for (const [network, coin] of Object.entries(CONVERSION_COINS)) {
+      if (conversion && coin !== conversion) continue;
+      // A closed native feed must supply a new observation before its pool
+      // conversion can establish a recovery baseline, even within 30 seconds.
+      if (!conversion) this.quotes.delete(coin);
+      this.poolGeneration[network]++;
+      this.invalidateCoins(POOL_NETWORKS[network]);
+      if (this.poolHeads[network]) this.poolHeads[network].healthy = false;
+    }
+  }
+
+  async processQuotes(quotes, poolGenerations) {
     await this.ready;
     if (!isActive(this.env)) return;
     await this.locked(async () => {
       const now = this.now();
+      // Composite expiry can occur sooner than a rule's ordinary gap window.
+      // Invalidate the old baseline before accepting a later fresh composite.
+      this.expirePoolQuotes(now);
       for (const input of quotes) {
         const checked = validateQuote(input, now);
-        if (!checked.valid || !LIVE_COINS.includes(input.coin)) continue;
+        const pool = POOL_COINS.includes(input.coin);
+        if (pool && poolGenerations && poolGenerations[COINS[input.coin].network] !== this.poolGeneration[COINS[input.coin].network]) {
+          this.invalidateCoins([input.coin]);
+          continue;
+        }
+        if (!checked.valid || !ALL_COINS.includes(input.coin) ||
+            (pool && (input.source !== POOL_SOURCES[input.coin] || !Number.isSafeInteger(input.freshUntil)))) {
+          if (pool) this.invalidateCoins([input.coin]);
+          continue;
+        }
+        if (input.snapshot && ['ETH', 'BNB'].includes(input.coin)) this.resetPoolConversions(input.coin);
         const quote = checked.quote || input;
         const prior = this.quotes.get(quote.coin);
         if (prior && quote.timestamp <= prior.timestamp) continue;
@@ -586,6 +885,7 @@ export class CryptoAlertMonitor {
     try {
       await this.locked(async () => {
         const now = this.now();
+        this.expirePoolQuotes(now);
         for (const [key, record] of this.ipBuckets) if (record.day !== dayKey(now)) { await this.ctx.storage.delete(`ip:${key}`); this.ipBuckets.delete(key); }
         for (const [key, record] of this.operations) if (now - record.createdAt > DEVICE_TTL) { await this.ctx.storage.delete(`operation:${key}`); this.operations.delete(key); }
         for (const [id, device] of this.devices) if (now - device.updatedAt > DEVICE_TTL) await this.remove(id);
@@ -599,7 +899,7 @@ export class CryptoAlertMonitor {
       });
       if (this.socket && this.now() - this.lastFrameAt > 45_000) this.closeFeed();
       if (!this.needsFeed()) this.closeFeed();
-      await this.ensureFeed();
+      await this.ensureSources();
       await this.drainOutbox();
     } finally {
       await this.planWake();

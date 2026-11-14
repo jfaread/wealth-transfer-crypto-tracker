@@ -51,11 +51,11 @@ The maintainer can then inspect the public `/v1/config` response and complete th
 
 1. Verify the dedicated address, expected website origin, free-plan choice and inactive state. Inactive configuration intentionally returns no public push key.
 2. Change `ALERTS_ENABLED` in `alerts/wrangler.jsonc` to `"true"`. The connected production build deploys that reviewed change while preserving existing secrets.
-3. Verify the public push key, fresh source timestamps and the five supported feed subscriptions from the running service. Keep unsupported or stale sources unavailable.
+3. Verify the public push key, all five Kraken USD subscriptions and the three exact-contract pool sources from the running service. Check the pool block hashes, block times and native/USD conversion times separately. Keep stale or rejected sources unavailable. Confirm the deployed Worker can reach the public RPC endpoints within its normal limits.
 4. Put the verified backend origin in `alerts-config.json`, rebuild the website's content security policy and publish through the existing GitHub Pages workflow.
 5. Test on an opted-in phone with the website open, with it closed and with the phone locked. Provider acceptance alone is not proof of display on the phone.
 
-The first adapter covers **BTC, ETH, BNB, XRP and SOL**. **KISHU, Wiki Cat and CREPE remain inactive drafts** until their continuous price feeds have been independently validated. All eight remain available in the tracker itself.
+The adapters cover **all eight coins**. BTC, ETH, BNB, XRP and SOL use Kraken USD observations. KISHU, Wiki Cat and CREPE use indicative USD prices derived from their exact token pools, checked about every 15 seconds while needed. These pool prices are not executable trade quotes and can differ from the chart. A coin remains unavailable for new active rules until its own fresh source checks pass. Public RPC availability and sustained operation in the deployed Worker still need to be verified before launch.
 
 ## Keep routine builds and pauses predictable
 

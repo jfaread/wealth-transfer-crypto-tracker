@@ -9,6 +9,7 @@
     ['SOL', 'Solana'], ['KISHU', 'Kishu Inu'], ['WKC', 'Wiki Cat'], ['CREPE', 'CREPE']
   ];
   const COIN_IDS = COINS.map(([id]) => id);
+  const POOL_COINS = ['KISHU', 'WKC', 'CREPE'];
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const project = new URL('./', document.baseURI);
   const $ = id => document.getElementById(id);
@@ -169,7 +170,7 @@
       const state = draft ? 'Saved on this device - not active' : item.enabled ? 'Enabled rule' : 'Paused or completed';
       entry.append(textElement('span', state + ' · ' + (item.repeat ? 'Repeat on a new crossing, at least 60 seconds apart' : 'Once, then stop'), 'wa-rule-meta'));
       if (draft && config && !available(item.coin)) {
-        entry.append(textElement('span', 'Background monitoring is not available for this coin yet.', 'wa-rule-meta'));
+        entry.append(textElement('span', 'Background monitoring is currently unavailable for this coin.', 'wa-rule-meta'));
       }
       const buttons = textElement('div', '', 'wa-actions');
       if (draft) {
@@ -229,9 +230,11 @@
 
     const coin = $('wa-coin').value;
     const capability = config?.coins.find(item => item.id === coin);
-    $('wa-coin-note').textContent = config && !capability?.enabled ?
-      coin + ': draft only. ' + (capability?.reason || 'Background monitoring is not available for this coin yet.') :
+    const coinNote = config && !capability?.enabled ?
+      coin + ': draft only. ' + (capability?.reason || 'Background monitoring is currently unavailable for this coin.') :
       canSaveRemote(coin) ? 'This threshold will be saved to the background monitor.' : 'This threshold will be saved on this device only and will not send alerts.';
+    $('wa-coin-note').textContent = coinNote + (POOL_COINS.includes(coin) ?
+      ' When active, this token uses an indicative pool price in USD, checked about every 15 seconds. It can differ from the chart.' : '');
     $('wa-save-rule').textContent = canSaveRemote(coin) ? 'Save alert with the monitor' : 'Save draft on this device';
     $('wa-rule-form').querySelectorAll('input,select,button').forEach(element => { element.disabled = busy; });
     $('wa-server-section').hidden = !connected;
@@ -243,7 +246,8 @@
     $('wa-source-details').hidden = !config;
     $('wa-sources').replaceChildren();
     if (config) for (const item of config.coins) {
-      $('wa-sources').append(textElement('li', item.id + ': ' + (item.enabled ? item.source : 'Not enabled') + (item.reason ? '. ' + item.reason : '')));
+      $('wa-sources').append(textElement('li', item.id + ': ' + item.source +
+        (item.enabled ? '' : '. Currently unavailable') + (item.reason ? '. ' + item.reason : '')));
     }
     const lastObservation = time(remote.monitor?.lastObservedAt);
     const monitorMessage = typeof remote.monitor?.message === 'string' ? remote.monitor.message.slice(0,400) : '';
@@ -305,7 +309,8 @@
         error.status = response.status;
         error.code = typeof value?.error === 'string' ? value.error : typeof value?.code === 'string' ? value.code : value?.error?.code;
         if (error.code === 'price_not_ready') error.message = 'A fresh price is not available for one of these coins. No rule was changed. Choose Check service, then try again when its source is ready.';
-        if (['daily_feed_limit', 'budget_paused'].includes(error.code)) error.message = 'The free pilot has paused monitoring after reaching its daily data allowance. Saved rules remain in place; check the service after the allowance resets.';
+        if (['daily_feed_limit', 'feed_budget_paused', 'budget_paused'].includes(error.code)) error.message = 'The free pilot has paused monitoring after reaching its daily data allowance. Saved rules remain in place; check the service after the allowance resets.';
+        if (error.code === 'daily_pool_limit') error.message = 'The free pilot has paused KISHU, Wiki Cat and CREPE checks after reaching its daily pool-data allowance. Saved rules remain in place; check the service after midnight UTC.';
         if (['daily_limit', 'daily_push_limit', 'device_daily_limit', 'global_daily_limit'].includes(error.code)) error.message = 'The free pilot has reached its daily notification allowance. It allows up to 20 notifications per device and 200 in total per day. Extra alerts are not replayed later.';
         if (error.code === 'pilot_full') error.message = 'The free pilot has reached its 50-device limit. An unused device must be disconnected before another can join.';
         if (error.code === 'registration_limit') error.message = 'This network has reached today’s device-registration allowance. Try again tomorrow; your drafts remain on this device.';

@@ -12,7 +12,8 @@
     "ALLOWED_ORIGIN": "https://jfaread.github.io",
     "PUBLIC_SITE_URL": "https://jfaread.github.io/wealth-transfer-crypto-tracker/",
     "MAX_DEVICES": "50",
-    "MAX_FEED_FRAMES_PER_DAY": "1000000"
+    "MAX_FEED_FRAMES_PER_DAY": "1000000",
+    "MAX_POOL_POLLS_PER_DAY": "6000"
   },
   "durable_objects": {
     "bindings": [{"name": "ALERT_MONITOR", "class_name": "CryptoAlertMonitor"}]
