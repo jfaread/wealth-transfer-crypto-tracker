@@ -2,7 +2,7 @@ name: Verify and publish feed hardening
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/harden-price-feeds.yml', '.maintenance/feed-hardening.*', '.maintenance/apply-feed-hardening.mjs']
+    paths: ['.github/workflows/harden-price-feeds.yml', '.maintenance/feed-hardening.*', '.maintenance/apply-feed-hardening.mjs', 'tests/snapshot-freshness.test.mjs']
 permissions:
   contents: write
   pages: write
