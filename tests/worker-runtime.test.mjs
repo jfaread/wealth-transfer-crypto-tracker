@@ -261,7 +261,7 @@ test('Workerd: genuine adapter code validates both mocked chains and enables all
     }
     const stats = await (await mockWorker.fetch('https://runtime-capture.invalid/state')).json();
     assert(config.coins.every(coin => coin.enabled), JSON.stringify({coins: config.coins.map(coin => [coin.id, coin.enabled]), monitor: config.monitor, stats}));
-    assert.equal(stats.rpcCount, 6); assert.equal(stats.blockedCount, 0);
+    assert.equal(stats.rpcCount, 8); assert.equal(stats.blockedCount, 0);
     assert.equal(config.monitor.poolPollsRemaining, 5999);
     assert.equal(config.monitor.poolPollingIntervalMs, 15_000);
     for (const coin of config.coins.filter(coin => ['KISHU', 'WKC', 'CREPE'].includes(coin.id))) {
@@ -284,7 +284,7 @@ test('Workerd: genuine adapter code validates both mocked chains and enables all
     assert.equal(state.events.length, 0, 'first observations establish baselines');
     for (let i = 0; i < 3; i++) await call(mf, '/v1/config');
     const finalStats = await (await mockWorker.fetch('https://runtime-capture.invalid/state')).json();
-    assert.equal(finalStats.rpcCount, 6, 'configuration reads cannot defeat the reserved poll interval');
+    assert.equal(finalStats.rpcCount, 8, 'configuration reads cannot defeat the reserved poll interval');
     assert.equal(finalStats.blockedCount, 0);
     assert.equal((await call(mf, '/v1/device', {method: 'DELETE', token: device.token})).status, 200);
   } finally {await mf.dispose();}

@@ -2,7 +2,7 @@ import {validateQuote, QUOTE_MAX_AGE_MS, RECEIPT_MAX_AGE_MS, BASELINE_GAP_MS} fr
 
 export const POOL_COINS = Object.freeze(['KISHU', 'WKC', 'CREPE']);
 export const POOL_POLL_MS = 15_000;
-export const MAX_RPC_REQUESTS_PER_POLL = 6;
+export const MAX_RPC_REQUESTS_PER_POLL = 8;
 export const POOL_SOURCES = Object.freeze({
   KISHU: 'Indicative Uniswap v2 KISHU/WETH + Kraken ETH/USD',
   WKC: 'Indicative PancakeSwap v2 WKC/WBNB + Kraken BNB/USD',
@@ -138,6 +138,20 @@ async function limitedJson(response, signal) {
 /** A request is bounded by bytes and wall-clock time, including a stalled body. */
 async function rpcBatch(network, calls, fetchImpl, now) {
   if (!calls.length || calls.length > 20) fail('invalid_batch');
+  // Public dRPC permits three calls per HTTP batch. Preserve all pinned
+  // reads, response checks and one shared eight-second state deadline.
+  if (network !== 'ethereum' || calls.length <= 3) return rpcChunk(network, calls, fetchImpl, now);
+  const deadline = clockValue(now) + RPC_TIMEOUT_MS, values = [];
+  for (let offset = 0; offset < calls.length; offset += 3) {
+    const remaining = deadline - clockValue(now);
+    if (remaining <= 0) fail('rpc_timeout');
+    values.push(...await rpcChunk(network, calls.slice(offset, offset + 3), fetchImpl, now, remaining));
+    if (clockValue(now) >= deadline) fail('rpc_timeout');
+  }
+  return values;
+}
+
+async function rpcChunk(network, calls, fetchImpl, now, timeoutMs = RPC_TIMEOUT_MS) {
   const requests = calls.map((call, index) => ({jsonrpc: '2.0', id: index + 1, ...call}));
   const controller = new AbortController();
   let timer, response;
@@ -145,7 +159,7 @@ async function rpcBatch(network, calls, fetchImpl, now) {
     timer = setTimeout(() => {
       controller.abort(); cancelBody(response);
       reject(new FeedError('rpc_timeout'));
-    }, RPC_TIMEOUT_MS);
+    }, timeoutMs);
   });
   try {
     return await Promise.race([timeout, (async () => {

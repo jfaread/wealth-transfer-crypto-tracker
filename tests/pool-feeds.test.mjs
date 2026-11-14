@@ -32,7 +32,7 @@ const response = value => new Response(JSON.stringify(value), {headers: {'Conten
 
 /** Closed local fixture: no fallback to fetch, and only public read-only methods. */
 function fixture({time = NOW, number = 256, previous = [], change, pools = {}, advance} = {}) {
-  const requests = [], stages = {ethereum: 0, bsc: 0};
+  const requests = [];
   const records = Object.fromEntries(Object.entries(FIXTURES).map(([coin, info]) => [coin, {...info, ...pools[coin]}]));
   const current = block(number, time);
   const old = new Map(previous.map(header => [header.number, header]));
@@ -42,8 +42,10 @@ function fixture({time = NOW, number = 256, previous = [], change, pools = {}, a
     assert.equal(options.method, 'POST'); assert.equal(options.redirect, 'manual');
     assert(options.signal instanceof AbortSignal);
     assert.equal(options.headers.Authorization, undefined);
-    const calls = JSON.parse(options.body), stage = ++stages[network];
-    assert(calls.length <= 20);
+    const calls = JSON.parse(options.body);
+    const stage = calls.every(call => call.method === 'eth_call') ? 2
+      : calls[0].method === 'eth_chainId' ? 1 : 3;
+    assert(calls.length <= (network === 'ethereum' ? 3 : 20));
     requests.push({network, stage, calls, signal: options.signal});
     const results = calls.map(call => {
       let result;
@@ -90,11 +92,11 @@ function fixture({time = NOW, number = 256, previous = [], change, pools = {}, a
 }
 const poll = (mock, options = {}) => pollPoolPrices({fetchImpl: mock.fetchImpl, now: () => NOW, conversionQuotes: conversions(), ...options});
 
-test('all three verified pools use six fixed, bounded read-only batches and correct reserve orientation', async () => {
+test('all three verified pools use eight fixed, bounded read-only batches and correct reserve orientation', async () => {
   const mock = fixture(), result = await poll(mock);
   assert.deepEqual(POOL_COINS, ['KISHU', 'WKC', 'CREPE']);
-  assert.equal(POOL_POLL_MS, 15_000); assert.equal(MAX_RPC_REQUESTS_PER_POLL, 6);
-  assert.equal(mock.requests.length, 6); assert.deepEqual(result.errors, []);
+  assert.equal(POOL_POLL_MS, 15_000); assert.equal(MAX_RPC_REQUESTS_PER_POLL, 8);
+  assert.equal(mock.requests.length, 8); assert.deepEqual(result.errors, []);
   assert.deepEqual(result.quotes.map(q => [q.coin, q.price]), [
     ['KISHU', '0.000000000004'], ['WKC', '0.0000012'], ['CREPE', '0.0000018'],
   ]);
@@ -220,7 +222,7 @@ test('healthy consecutive observations keep monitoring, while a previous block r
   const second = await poll(follow, {coins: ['KISHU'], now: () => NOW + 15_000,
     conversionQuotes: conversions(NOW + 15_000), heads: first.heads});
   assert.equal(second.quotes[0].snapshot, false); assert.deepEqual(second.resetCoins, []);
-  assert.equal(follow.requests[2].calls.length, 3, 'Previous observed block must be checked.');
+  assert.equal(follow.requests.at(-1).calls.length, 3, 'Previous observed block must be checked.');
   const fork = fixture({time: NOW + 15_000, number: 257, previous: [{...initial.current, hash: hash(9999)}]});
   const changed = await poll(fork, {coins: ['KISHU'], now: () => NOW + 15_000,
     conversionQuotes: conversions(NOW + 15_000), heads: first.heads});
@@ -336,4 +338,32 @@ test('empty selections make no requests and unknown selections cannot choose arb
   assert.deepEqual(empty.quotes, []); assert.equal(mock.requests.length, 0);
   await assert.rejects(poll(mock, {coins: ['BTC']}), /supported pool feeds/);
   assert.equal(mock.requests.length, 0);
+});
+
+test('Ethereum free-tier batches contain at most three calls, all pinned to one verified block', async () => {
+  const mock=fixture(), result=await poll(mock);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(mock.requests.filter(r=>r.network==='ethereum').map(r=>r.calls.length), [2,3,3,1,2]);
+  assert.deepEqual(mock.requests.filter(r=>r.network==='bsc').map(r=>r.calls.length), [2,13,2]);
+  assert.equal(mock.requests.length,MAX_RPC_REQUESTS_PER_POLL);
+});
+test('a rate limit in an Ethereum chunk stops remaining reads and retains Retry-After', async () => {
+  const mock=fixture({change:({network,calls,results})=>network==='ethereum' && calls.some(c=>c.params?.[0]?.data==='0x0902f1ac')
+    ? new Response(null,{status:429,headers:{'Retry-After':'120'}}):results});
+  const result=await poll(mock,{coins:['KISHU']});
+  assert.equal(mock.requests.length,3);assert.deepEqual(result.quotes,[]);
+  assert.equal(result.errors[0].reason,'rate_limited');assert.equal(result.errors[0].retryAt,NOW+120000);
+});
+test('Ethereum chunks share one deadline and cannot prolong the state-reading window', async () => {
+  let clock=NOW;
+  const mock=fixture({advance:({stage})=>{if(stage===2)clock+=3000;}});
+  const result=await poll(mock,{coins:['KISHU'],now:()=>clock});
+  assert.equal(mock.requests.length,4);assert.deepEqual(result.quotes,[]);
+  assert.equal(result.errors[0].reason,'rpc_timeout');
+});
+test('out-of-order chunk responses retain exact pool identity and price', async () => {
+  const mock=fixture({change:({results})=>[...results].reverse()});
+  const result=await poll(mock,{coins:['KISHU']});
+  assert.deepEqual(result.errors,[]);assert.equal(result.quotes[0].price,'0.000000000004');
+  assert.equal(result.evidence.KISHU.token,FIXTURES.KISHU.token);
 });

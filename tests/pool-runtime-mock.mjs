@@ -66,7 +66,7 @@ export default {
       headers[network] ||= {number: '0x100', timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16), hash: '0x' + (network === 'ethereum' ? '1' : '2').repeat(64)};
       try {
         const calls = await request.json();
-        if (!Array.isArray(calls) || calls.length > 20) throw Error('Unexpected batch');
+        if (!Array.isArray(calls) || calls.length > (network === 'ethereum' ? 3 : 20)) throw Error('Unexpected batch');
         return Response.json(calls.map(call => ({jsonrpc: '2.0', id: call.id, result: rpc(network, call)})));
       } catch {blockedCount++; return new Response('Closed RPC fixture rejected the request.', {status: 502});}
     }

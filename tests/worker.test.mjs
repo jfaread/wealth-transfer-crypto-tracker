@@ -356,7 +356,7 @@ test('all three indicative pool sources support one-shot crossings with independ
   await nativeQuotes(h); const device = await register(h); await h.settle();
   const config = h.object.config();
   assert(config.coins.every(coin => coin.enabled));
-  assert.equal(config.limits.maxPoolPollsPerDay, 6000); assert.equal(config.limits.maxPoolRpcRequestsPerPoll, 6);
+  assert.equal(config.limits.maxPoolPollsPerDay, 6000); assert.equal(config.limits.maxPoolRpcRequestsPerPoll, 8);
   for (const coin of config.coins.filter(item => POOL_COINS.includes(item.id))) {
     assert.equal(coin.indicative, true); assert.equal(coin.samplingMs, 15_000);
     assert.equal(coin.evidence.token, COINS[coin.id].contract); assert.match(coin.source, /Indicative/);
