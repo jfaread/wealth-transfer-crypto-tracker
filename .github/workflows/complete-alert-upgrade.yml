@@ -28,8 +28,6 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import fs from 'node:fs';import {execFileSync} from 'node:child_process';
-          // Reuse the already reviewed, immutable transformation, including its
-          // original-file hash guards. Do not retrieve or execute remote code.
           const original=execFileSync('git',['show','a75d93db61732203e7aa100593165118bd84f65c:.github/workflows/complete-alert-upgrade.yml'],{encoding:'utf8'});
           const match=original.match(/          node --input-type=module <<'NODE'\n([\s\S]*?)\n          NODE/);
           if(!match)throw Error('Pinned source transformation is missing');
@@ -46,7 +44,10 @@ jobs:
              assert.equal(await page.locator('#wa-draft-rules .wa-rule').count(),2);
              const shibDraft=await page.evaluate(key=>JSON.parse(localStorage.getItem(key)).drafts.find(rule=>rule.coin==='SHIB'),KEY);
              assert.equal(shibDraft.threshold,'0.000004150000000001');
-             assert.equal(shibDraft.enabled,false);
+             assert.equal(await page.evaluate(key=>JSON.parse(localStorage.getItem(key)).auth,KEY),null);
+             assert.match(await page.locator('#wa-message').innerText(),/not active/);
+             assert.equal(await page.evaluate(()=>window.__alertProbe.permissions),0);
+             assert.equal(await page.locator('#wa-server-section').isVisible(),false);
              console.log`);
           console.log(execFileSync('git',['diff','--stat'],{encoding:'utf8'}));
           NODE
