@@ -2,7 +2,7 @@ name: Refresh public market data
 on:
   workflow_dispatch:
   schedule:
-    - cron: '23 * * * *'
+    - cron: '8,23,38,53 * * * *'
   push:
     branches: [main]
     paths:
@@ -15,6 +15,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'scripts/refresh-quotes.mjs'
+      - 'scripts/market-data-core.mjs'
       - 'scripts/refresh-creator-updates.mjs'
       - 'data/jon-george.json'
       - 'scripts/test-fast-load.cjs'
@@ -28,7 +29,7 @@ permissions:
   id-token: write
 concurrency:
   group: public-market-data
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   refresh:
     if: github.event.repository.private == false
@@ -37,6 +38,8 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      WRANGLER_SEND_METRICS: 'false'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,13 +47,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '26.13.1'
-      # Code releases reuse the validated, genuinely dated committed history.
-      # Historical-provider retries must not hold up a website-only update.
-      - name: Refresh historical market data
-        if: github.event_name != 'push'
-        run: node scripts/refresh-market-data.mjs
-      - name: Verify and cache current quotes
+      - name: Verify and cache current quotes independently
         run: node scripts/refresh-quotes.mjs
+      # Recent and yearly windows have independent clocks. Valid histories are
+      # reused; unsuccessful providers cannot erase successful coin updates.
+      - name: Repair due historical windows without discarding good data
+        run: node scripts/refresh-market-data.mjs
       - name: Cache the latest five public Jon George updates
         run: node scripts/refresh-creator-updates.mjs
       - name: Commit verified public prices and creator metadata
@@ -64,14 +66,16 @@ jobs:
             git push
           fi
       - name: Prepare static site
-        run: |
-          node scripts/build-site.mjs
-      - name: Verify fast loading, responsive layout and creator update recovery
-        timeout-minutes: 2
+        run: node scripts/build-site.mjs
+      - name: Verify data safety, charts, mobile alerts and creator recovery
+        timeout-minutes: 4
         if: github.event_name == 'push'
         run: |
           npm ci --ignore-scripts
+          npm run check:worker -- --minify
+          npm test
           node scripts/test-fast-load.cjs
+          node scripts/test-alerts-browser.cjs
           node scripts/test-news-browser.cjs
       - uses: actions/upload-pages-artifact@v3
         with:
