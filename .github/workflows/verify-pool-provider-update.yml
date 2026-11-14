@@ -1,0 +1,79 @@
+name: Verify free pool provider update
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/verify-pool-provider-update.yml']
+permissions:
+  contents: write
+concurrency:
+  group: verified-pool-provider-update
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.13.1'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Change only documented public RPC providers and matching mocks
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';import {execFileSync} from 'node:child_process';
+          if(execFileSync('git',['hash-object','alerts/pool-feeds.mjs'],{encoding:'utf8'}).trim()!=='9c03296d373ee2d4a69b0b35a692e260e625a364')throw Error('Pool source changed; refusing to overwrite it');
+          for(const [file,count]of [['alerts/pool-feeds.mjs',1],['tests/pool-runtime-mock.mjs',1],['tests/pool-feeds.test.mjs',2]]){
+            let text=fs.readFileSync(file,'utf8');
+            for(const [from,to]of [['https://ethereum-rpc.publicnode.com','https://eth.drpc.org'],['https://bsc-rpc.publicnode.com','https://bsc-dataseed.bnbchain.org']]){
+              if(text.split(from).length-1!==count)throw Error('Unexpected provider references in '+file);
+              text=text.split(from).join(to);
+            }
+            fs.writeFileSync(file,text);
+          }
+          console.log(execFileSync('git',['diff','--stat'],{encoding:'utf8'}));
+          NODE
+      - name: Compile exact bundle and run every backend test
+        run: |
+          npm run check:worker -- --minify
+          npm test
+      - name: Retest chart refresh and phone interface
+        run: |
+          npm run build
+          npm run test:charts
+          npm run test:alerts-browser
+      - name: Publish only verified source
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA"
+          git config user.name 'crypto-watch-build'
+          git config user.email 'crypto-watch-build@users.noreply.github.com'
+          git add alerts/pool-feeds.mjs tests/pool-runtime-mock.mjs tests/pool-feeds.test.mjs
+          git rm .github/workflows/verify-pool-provider-update.yml
+          git commit -m 'Use documented free Ethereum and BNB Chain RPC providers for exact-pool alerts'
+          git push origin HEAD:main
+      - name: Publish integrity-checked bundle
+        run: |
+          set -euo pipefail
+          export SOURCE_COMMIT=$(git rev-parse HEAD)
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';import crypto from 'node:crypto';
+          const b=fs.readFileSync('.worker-build/worker.js');fs.mkdirSync('deployment-artifacts',{recursive:true});
+          fs.writeFileSync('deployment-artifacts/worker.js',b);
+          fs.writeFileSync('deployment-artifacts/manifest.json',JSON.stringify({sourceCommit:process.env.SOURCE_COMMIT,runId:process.env.GITHUB_RUN_ID,node:process.version,sha256:crypto.createHash('sha256').update(b).digest('hex'),bytes:b.length},null,2)+'\n');
+          NODE
+          git checkout -b "deploy/alerts-${SOURCE_COMMIT:0:12}"
+          git add deployment-artifacts
+          git commit -m "Verified pool-provider bundle for $SOURCE_COMMIT"
+          git push origin HEAD
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verified-pool-provider-update
+          path: |
+            deployment-artifacts/
+            qa/*.png
+          retention-days: 7
