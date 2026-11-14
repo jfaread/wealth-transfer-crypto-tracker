@@ -16,12 +16,18 @@ on:
       - 'package-lock.json'
       - 'scripts/refresh-quotes.mjs'
       - 'scripts/market-data-core.mjs'
+      - 'scripts/market-client.mjs'
+      - 'scripts/verify-market-publication.mjs'
       - 'scripts/refresh-creator-updates.mjs'
       - 'data/jon-george.json'
       - 'scripts/test-fast-load.cjs'
+      - 'scripts/test-alerts-browser.cjs'
       - 'scripts/test-news-browser.cjs'
       - 'scripts/build-site.mjs'
       - 'scripts/refresh-market-data.mjs'
+      - 'tests/market-*.test.mjs'
+      - 'tests/snapshot-*.test.mjs'
+      - 'tests/browser-data-hardening.test.mjs'
       - '.github/workflows/market-data.yml'
 permissions:
   contents: write
@@ -49,25 +55,19 @@ jobs:
           node-version: '26.13.1'
       - name: Verify and cache current quotes independently
         run: node scripts/refresh-quotes.mjs
-      # Recent and yearly windows have independent clocks. Valid histories are
-      # reused; unsuccessful providers cannot erase successful coin updates.
-      - name: Repair due historical windows without discarding good data
+      - name: Repair due histories with shared persistent provider limits
         run: node scripts/refresh-market-data.mjs
       - name: Cache the latest five public Jon George updates
         run: node scripts/refresh-creator-updates.mjs
-      - name: Commit verified public prices and creator metadata
+      # These gates apply to scheduled and manual runs as well as code releases.
+      # Invalid candidates cannot replace the last published site or saved prices.
+      - name: Build and validate every publication before saving market data
         run: |
-          git config user.name 'crypto-tracker-data'
-          git config user.email 'crypto-tracker-data@users.noreply.github.com'
-          git add data
-          if ! git diff --cached --quiet; then
-            git commit -m 'Refresh verified public market and creator data'
-            git pull --rebase origin main
-            git push
-          fi
-      - name: Prepare static site
-        run: node scripts/build-site.mjs
-      - name: Verify data safety, charts, mobile alerts and creator recovery
+          set -euo pipefail
+          node scripts/build-site.mjs
+          node scripts/verify-market-publication.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+          node --test tests/market-data-core.test.mjs tests/market-client-hardening.test.mjs tests/snapshot-freshness.test.mjs tests/snapshot-hardening.test.mjs tests/browser-data-hardening.test.mjs tests/news.test.mjs
+      - name: Verify full runtime, chart, mobile alerts and creator recovery
         timeout-minutes: 4
         if: github.event_name == 'push'
         run: |
@@ -77,9 +77,46 @@ jobs:
           node scripts/test-fast-load.cjs
           node scripts/test-alerts-browser.cjs
           node scripts/test-news-browser.cjs
+      - name: Commit only verified data from the exact tested revision
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$(git rev-parse HEAD)" || { echo 'Main changed during verification. Keeping the existing publication.'; exit 1; }
+          git config user.name 'crypto-tracker-data'
+          git config user.email 'crypto-tracker-data@users.noreply.github.com'
+          git add -- 'data/*.json'
+          if ! git diff --cached --quiet; then
+            git commit -m 'Refresh verified public market and creator data'
+            git push origin HEAD:main
+          fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
           retention-days: 1
+      - name: Refuse an obsolete deployment
+        run: test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$(git rev-parse HEAD)"
       - uses: actions/deploy-pages@v4
         id: deployment
+      - name: Preserve verified provider cooldown even after a failed publication gate
+        if: always() && !cancelled()
+        run: |
+          set -euo pipefail
+          if [ ! -f data/provider-state.json ]; then exit 0; fi
+          node --input-type=module <<'NODE'
+          import {readFile} from 'node:fs/promises';
+          import {providerState} from './scripts/market-data-core.mjs';
+          const text=await readFile('data/provider-state.json','utf8');
+          if(text.length>2048)throw Error('Invalid provider timing state');
+          providerState(JSON.parse(text));
+          NODE
+          # Never rebase, force-push, or save price files after failed checks.
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$(git rev-parse HEAD)" ]; then
+            echo '::warning::Concurrent repository change; provider state was not overwritten.'
+            exit 0
+          fi
+          git add -- data/provider-state.json
+          if ! git diff --cached --quiet -- data/provider-state.json; then
+            git config user.name 'crypto-tracker-data'
+            git config user.email 'crypto-tracker-data@users.noreply.github.com'
+            git commit --only -m 'Preserve public provider timing limits without publishing price changes' -- data/provider-state.json
+            git push origin HEAD:main
+          fi
