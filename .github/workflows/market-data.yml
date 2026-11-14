@@ -15,7 +15,10 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'scripts/refresh-quotes.mjs'
+      - 'scripts/refresh-creator-updates.mjs'
+      - 'data/jon-george.json'
       - 'scripts/test-fast-load.cjs'
+      - 'scripts/test-news-browser.cjs'
       - 'scripts/build-site.mjs'
       - 'scripts/refresh-market-data.mjs'
       - '.github/workflows/market-data.yml'
@@ -48,25 +51,28 @@ jobs:
         run: node scripts/refresh-market-data.mjs
       - name: Verify and cache current quotes
         run: node scripts/refresh-quotes.mjs
-      - name: Commit verified public prices
+      - name: Cache the latest five public Jon George updates
+        run: node scripts/refresh-creator-updates.mjs
+      - name: Commit verified public prices and creator metadata
         run: |
           git config user.name 'crypto-tracker-data'
           git config user.email 'crypto-tracker-data@users.noreply.github.com'
           git add data
           if ! git diff --cached --quiet; then
-            git commit -m 'Refresh verified public market history'
+            git commit -m 'Refresh verified public market and creator data'
             git pull --rebase origin main
             git push
           fi
       - name: Prepare static site
         run: |
           node scripts/build-site.mjs
-      - name: Verify fast loading and responsive layout
+      - name: Verify fast loading, responsive layout and creator update recovery
         timeout-minutes: 2
         if: github.event_name == 'push'
         run: |
           npm ci --ignore-scripts
           node scripts/test-fast-load.cjs
+          node scripts/test-news-browser.cjs
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
