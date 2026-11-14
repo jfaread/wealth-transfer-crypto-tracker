@@ -1,0 +1,50 @@
+{
+  "sourceCommit": "996fd3082a7e8d336ed6d83945c92291c7dff724",
+  "runId": "43591301476",
+  "node": "v26.13.1",
+  "sha256": "1057fedc0cb542a32a9813cf6b129f662ed90aae6a9089612578901315726fc1",
+  "bytes": 177298,
+  "gzipBytes": 55849,
+  "parts": [
+    {
+      "name": "worker-gzip-part-01.txt",
+      "characters": 8000
+    },
+    {
+      "name": "worker-gzip-part-02.txt",
+      "characters": 8000
+    },
+    {
+      "name": "worker-gzip-part-03.txt",
+      "characters": 8000
+    },
+    {
+      "name": "worker-gzip-part-04.txt",
+      "characters": 8000
+    },
+    {
+      "name": "worker-gzip-part-05.txt",
+      "characters": 8000
+    },
+    {
+      "name": "worker-gzip-part-06.txt",
+      "characters": 8000
+    },
+    {
+      "name": "worker-gzip-part-07.txt",
+      "characters": 8000
+    },
+    {
+      "name": "worker-gzip-part-08.txt",
+      "characters": 8000
+    },
+    {
+      "name": "worker-gzip-part-09.txt",
+      "characters": 8000
+    },
+    {
+      "name": "worker-gzip-part-10.txt",
+      "characters": 2468
+    }
+  ]
+}
