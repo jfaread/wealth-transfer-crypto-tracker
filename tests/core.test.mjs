@@ -25,7 +25,9 @@ test('all eight token identities are fixed, including exact additional contracts
   assert.equal(COINS.WKC.contract,'0x6ec90334d89dbdc89e08a133271be3d104128edb');
   assert.equal(COINS.CREPE.contract,'0xeb2b7d5691878627eff20492ca7c9a71228d931d');
   assert.equal(COINS.CREPE.geckoId,'crepe-2');
-  assert.equal(COINS.KISHU.source,null);
+  assert.equal(COINS.KISHU.source,'Indicative Uniswap v2 KISHU/WETH + Kraken ETH/USD');
+  assert.equal(COINS.WKC.source,'Indicative PancakeSwap v2 WKC/WBNB + Kraken BNB/USD');
+  assert.equal(COINS.CREPE.source,'Indicative PancakeSwap v2 CREPE/WBNB + Kraken BNB/USD');
 });
 
 test('rule validation rejects unsupported assets, unsafe identifiers and ambiguous types', () => {
@@ -90,4 +92,94 @@ test('invalid, delayed and future quotes are rejected with a useful reason', () 
   assert.equal(validateQuote(quote('100',0,{timestamp:1.5}),NOW).reason,'invalid_quote');
   assert.equal(step(rule(),null,'101',0,{coin:'ETH'}).reason,'coin_mismatch');
   assert.equal(step(rule({enabled:false}),null,'101').reason,'disabled');
+});
+
+test('ordinary quotes retain their existing boundary behaviour and validated shape', () => {
+  const input = quote('000100.00',0,{timestamp:NOW-60_000,receivedAt:NOW-30_000});
+  const checked = validateQuote(input,NOW);
+  assert.deepEqual(checked,{valid:true,reason:'fresh',quote:{...input,price:'100'}});
+  assert.equal(Object.hasOwn(checked.quote,'freshUntil'),false);
+  assert.equal(validateQuote(checked.quote,NOW+1).reason,'stale_quote');
+  const r=rule(), baseline=step(r,null,'99').state;
+  assert.equal(evaluateRule(r,baseline,quote('99'),NOW+90_000).reason,'duplicate_quote');
+});
+
+test('derived quotes retain the earliest component deadline despite a recent composite timestamp', () => {
+  const cases = [
+    {name:'old pool block',blockTs:NOW-59_000,nativeTs:NOW,nativeReceipt:NOW,pollReceipt:NOW},
+    {name:'old native USD quote',blockTs:NOW,nativeTs:NOW-59_000,nativeReceipt:NOW,pollReceipt:NOW},
+    {name:'old native receipt',blockTs:NOW,nativeTs:NOW-29_000,nativeReceipt:NOW-29_000,pollReceipt:NOW},
+    {name:'old pool receipt',blockTs:NOW-29_000,nativeTs:NOW-29_000,nativeReceipt:NOW,pollReceipt:NOW-29_000}
+  ];
+  for (const {name,blockTs,nativeTs,nativeReceipt,pollReceipt} of cases) {
+    const freshUntil = Math.min(blockTs+60_000,nativeTs+60_000,nativeReceipt+30_000,pollReceipt+30_000);
+    assert.equal(freshUntil,NOW+1_000,name);
+    const input = quote('0.00000000025',0,{
+      coin:'KISHU',source:COINS.KISHU.source,timestamp:Math.max(blockTs,nativeTs),receivedAt:pollReceipt,freshUntil
+    });
+    const checked = validateQuote(input,NOW);
+    assert.equal(checked.valid,true,name);
+    assert.deepEqual(checked.quote,input,name);
+    assert.equal(validateQuote(checked.quote,NOW+999).valid,true,name);
+    assert.deepEqual(validateQuote(checked.quote,NOW+1_000),{valid:false,reason:'stale_quote'},name);
+    const {freshUntil:ignored,...ordinary} = input;
+    assert.equal(validateQuote(ordinary,NOW+1_000).valid,true,`${name}: component deadline is stricter than composite age`);
+  }
+});
+
+test('derived quote deadlines reject malformed values and cannot extend either freshness limit', () => {
+  for (const freshUntil of [undefined,null,'1763136000001',NaN,Infinity,-Infinity,0,-1,NOW+0.5,Number.MAX_SAFE_INTEGER+1,NOW+30_001]) {
+    assert.deepEqual(validateQuote(quote('100',0,{freshUntil}),NOW),{valid:false,reason:'invalid_quote'});
+  }
+  const oldTimestamp = quote('100',0,{timestamp:NOW-50_000,freshUntil:NOW+10_001});
+  assert.equal(validateQuote(oldTimestamp,NOW).reason,'invalid_quote','the source age bound applies even with a recent receipt');
+  assert.equal(validateQuote({...oldTimestamp,freshUntil:NOW+10_000},NOW).valid,true);
+  assert.equal(validateQuote(quote('100',0,{freshUntil:NOW+30_000}),NOW).valid,true);
+});
+
+test('a derived deadline does not bypass existing decimal, clock or age checks', () => {
+  assert.equal(validateQuote(quote('1e-8',0,{freshUntil:NOW+1_000}),NOW).reason,'invalid_price');
+  assert.equal(validateQuote(quote('100',6_000,{freshUntil:NOW+7_000}),NOW).reason,'future_quote');
+  assert.equal(validateQuote(quote('100',0,{timestamp:NOW+1_000,receivedAt:NOW-5_000,freshUntil:NOW+1_000}),NOW).reason,'future_quote');
+  assert.equal(validateQuote(quote('100',-61_000,{freshUntil:NOW-31_000}),NOW).reason,'stale_quote');
+  assert.equal(validateQuote(quote('100',-31_000,{freshUntil:NOW-1_000}),NOW).reason,'stale_receipt');
+});
+
+test('an expired component blocks a crossing and recovery requires a fresh baseline', () => {
+  const r=rule({coin:'KISHU'});
+  const derived = (price,t,freshUntil) => quote(price,t,{coin:'KISHU',source:COINS.KISHU.source,freshUntil});
+  let x=evaluateRule(r,null,derived('99',0,NOW+5_000),NOW);
+  assert.equal(x.reason,'baseline');
+  const original=x.state;
+  x=evaluateRule(r,x.state,derived('101',2_000,NOW+5_000),NOW+5_000);
+  assert.equal(x.reason,'stale_quote');
+  assert.equal(x.event,null);
+  assert.deepEqual(x.state,{...original,needsBaseline:true});
+  x=evaluateRule(r,x.state,derived('102',5_001,NOW+35_001),NOW+5_001);
+  assert.equal(x.reason,'gap_rebaseline');
+  assert.equal(x.event,null,'a recovered quote beyond the threshold is a baseline, not an observed crossing');
+  assert.equal(x.state.armed,false);
+  assert.equal(Object.hasOwn(x.state,'freshUntil'),false,'component deadlines do not alter persisted rule state');
+  x=evaluateRule(r,x.state,derived('99',5_002,NOW+35_002),NOW+5_002);
+  assert.equal(x.state.armed,true);
+  x=evaluateRule(r,x.state,derived('101',5_003,NOW+35_003),NOW+5_003);
+  assert.equal(x.reason,'crossing');
+  assert.ok(x.event);
+});
+
+test('the current derived quote expires when repeated, while older packets cannot disturb its baseline', () => {
+  const r=rule(), input=quote('99',0,{freshUntil:NOW+1_000});
+  const original=evaluateRule(r,null,input,NOW).state;
+  assert.equal(evaluateRule(r,original,input,NOW+999).reason,'duplicate_quote');
+  const older=evaluateRule(r,original,quote('101',-1,{freshUntil:NOW}),NOW+1_000);
+  assert.equal(older.reason,'out_of_order');
+  assert.deepEqual(older.state,original);
+  const expired=evaluateRule(r,original,input,NOW+1_000);
+  assert.equal(expired.reason,'stale_quote');
+  assert.equal(expired.event,null);
+  assert.deepEqual(expired.state,{...original,needsBaseline:true});
+  const recovered=evaluateRule(r,expired.state,quote('101',1_001,{freshUntil:NOW+31_001}),NOW+1_001);
+  assert.equal(recovered.reason,'gap_rebaseline');
+  assert.equal(recovered.event,null);
+  assert.equal(evaluateRule(r,original,{...input,freshUntil:'invalid'},NOW).reason,'invalid_quote');
 });

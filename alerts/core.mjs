@@ -5,9 +5,9 @@ export const COINS = Object.freeze({
   BNB: Object.freeze({id:'BNB', name:'BNB', geckoId:'binancecoin', source:'Kraken BNB/USD', pair:'BNB/USD'}),
   XRP: Object.freeze({id:'XRP', name:'XRP', geckoId:'ripple', source:'Kraken XRP/USD', pair:'XRP/USD'}),
   SOL: Object.freeze({id:'SOL', name:'Solana', geckoId:'solana', source:'Kraken SOL/USD', pair:'SOL/USD'}),
-  KISHU: Object.freeze({id:'KISHU', name:'KISHU', geckoId:'kishu-inu', network:'ethereum', contract:'0xA2b4C0Af19cC16a6CfAcCe81F192B024d625817D', source:null}),
-  WKC: Object.freeze({id:'WKC', name:'Wiki Cat', geckoId:'wiki-cat', network:'bsc', contract:'0x6ec90334d89dbdc89e08a133271be3d104128edb', source:null}),
-  CREPE: Object.freeze({id:'CREPE', name:'CREPE', geckoId:'crepe-2', network:'bsc', contract:'0xeb2b7d5691878627eff20492ca7c9a71228d931d', source:null})
+  KISHU: Object.freeze({id:'KISHU', name:'KISHU', geckoId:'kishu-inu', network:'ethereum', contract:'0xA2b4C0Af19cC16a6CfAcCe81F192B024d625817D', source:'Indicative Uniswap v2 KISHU/WETH + Kraken ETH/USD'}),
+  WKC: Object.freeze({id:'WKC', name:'Wiki Cat', geckoId:'wiki-cat', network:'bsc', contract:'0x6ec90334d89dbdc89e08a133271be3d104128edb', source:'Indicative PancakeSwap v2 WKC/WBNB + Kraken BNB/USD'}),
+  CREPE: Object.freeze({id:'CREPE', name:'CREPE', geckoId:'crepe-2', network:'bsc', contract:'0xeb2b7d5691878627eff20492ca7c9a71228d931d', source:'Indicative PancakeSwap v2 CREPE/WBNB + Kraken BNB/USD'})
 });
 
 export const QUOTE_MAX_AGE_MS = 60_000;
@@ -71,12 +71,17 @@ export function validateQuote(input, now = Date.now()) {
   let price;
   try { price = decimal(input.price); if (compareDecimals(price, '0') <= 0) throw new Error(); }
   catch { return {valid:false, reason:'invalid_price'}; }
-  const {timestamp, receivedAt, source} = input;
+  const {timestamp, receivedAt, source, freshUntil} = input;
   if (!Number.isSafeInteger(timestamp) || timestamp <= 0 || !Number.isSafeInteger(receivedAt) || receivedAt <= 0 || typeof source !== 'string' || source.length < 1 || source.length > 100 || /[\u0000-\u001f\u007f]/.test(source)) return {valid:false, reason:'invalid_quote'};
+  const hasFreshUntil = Object.hasOwn(input, 'freshUntil');
+  // A composite price may have a recent timestamp but an older source component.
+  // Its deadline can tighten the ordinary limits, never extend either one.
+  if (hasFreshUntil && (!Number.isSafeInteger(freshUntil) || freshUntil <= 0 || freshUntil > timestamp + QUOTE_MAX_AGE_MS || freshUntil > receivedAt + RECEIPT_MAX_AGE_MS)) return {valid:false, reason:'invalid_quote'};
   if (timestamp > now + FUTURE_TOLERANCE_MS || receivedAt > now + FUTURE_TOLERANCE_MS || timestamp > receivedAt + FUTURE_TOLERANCE_MS) return {valid:false, reason:'future_quote'};
   if (now - timestamp > QUOTE_MAX_AGE_MS) return {valid:false, reason:'stale_quote'};
   if (now - receivedAt > RECEIPT_MAX_AGE_MS) return {valid:false, reason:'stale_receipt'};
-  return {valid:true, reason:'fresh', quote:{coin:input.coin, price, source, timestamp, receivedAt}};
+  if (hasFreshUntil && now >= freshUntil) return {valid:false, reason:'stale_quote'};
+  return {valid:true, reason:'fresh', quote:{coin:input.coin, price, source, timestamp, receivedAt, ...(hasFreshUntil ? {freshUntil} : {})}};
 }
 
 function keyFor(rule) { return [rule.id,rule.coin,rule.direction,rule.threshold,rule.repeat ? 1 : 0].join('|'); }
@@ -103,8 +108,14 @@ export function evaluateRule(inputRule, previous = null, inputQuote, now = Date.
   if (!rule.enabled) return {state:original, event:null, reason:'disabled'};
   if (inputQuote?.coin !== rule.coin) return {state:original, event:null, reason:'coin_mismatch'};
   if (original?.ruleKey === keyFor(rule) && original.fired && !rule.repeat) return {state:original, event:null, reason:'completed'};
-  // Late/repeated packets do not reset or move an existing baseline backwards.
+  // Late/repeated packets do not move an existing baseline backwards.
   if (original && inputQuote?.source === original.lastSource && Number.isSafeInteger(inputQuote?.timestamp) && inputQuote.timestamp <= original.lastTimestamp) {
+    // Rechecking the current composite quote must notice an expired component.
+    // Genuinely older packets still cannot invalidate a newer baseline.
+    if (inputQuote.timestamp === original.lastTimestamp && Object.hasOwn(inputQuote, 'freshUntil')) {
+      const checked = validateQuote(inputQuote, now);
+      if (!checked.valid) return {state:{...original, needsBaseline:true}, event:null, reason:checked.reason};
+    }
     return {state:original, event:null, reason:inputQuote.timestamp === original.lastTimestamp ? 'duplicate_quote' : 'out_of_order'};
   }
   const checked = validateQuote(inputQuote, now);

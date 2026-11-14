@@ -12,7 +12,7 @@ The interface must never equate a saved local draft, browser permission, registr
 
 ## Operation with the website open or closed
 
-One Cloudflare Durable Object receives a shared live price stream and compares it with all enabled device rules. It runs on the server. No visitor's browser timer, open tab, GitHub Actions run or historical chart build is responsible for monitoring.
+One Cloudflare Durable Object receives a shared live price stream, samples the three additional token pools and compares valid prices with all enabled device rules. It runs on the server. No visitor's browser timer, open tab, GitHub Actions run or historical chart build is responsible for monitoring.
 
 After a user grants permission and connects their device, a fresh crossing creates a durable event and an encrypted Web Push request. The project's service worker displays the phone/computer notification. If the project is open, it also sends the event to that page for an accessible in-page banner. The event identifier prevents repeated processing of the same event from creating repeated foreground notices; the same identifier is used as the operating-system notification tag.
 
@@ -22,16 +22,16 @@ Delivery is best effort. An offline phone, Focus/Do Not Disturb, revoked permiss
 
 ## Price sources and exact token identities
 
-| Coin | First adapter | Live-alert eligibility after activation |
+| Coin | Price adapter | Live-alert eligibility after activation |
 | --- | --- | --- |
 | BTC | Kraken BTC/USD ticker | Enabled only with a fresh source observation |
 | ETH | Kraken ETH/USD ticker | Enabled only with a fresh source observation |
 | BNB | Kraken BNB/USD ticker | Enabled only with a fresh source observation |
 | XRP | Kraken XRP/USD ticker | Enabled only with a fresh source observation |
 | SOL | Kraken SOL/USD ticker | Enabled only with a fresh source observation |
-| KISHU | No validated continuous adapter yet | Inactive draft only |
-| Wiki Cat (WKC) | No validated continuous adapter yet | Inactive draft only |
-| CREPE | No validated continuous adapter yet | Inactive draft only |
+| KISHU | Indicative Uniswap v2 KISHU/WETH pool price × Kraken ETH/USD | Enabled only with fresh, verified components |
+| Wiki Cat (WKC) | Indicative PancakeSwap v2 WKC/WBNB pool price × Kraken BNB/USD | Enabled only with fresh, verified components |
+| CREPE | Indicative PancakeSwap v2 CREPE/WBNB pool price × Kraken BNB/USD | Enabled only with fresh, verified components |
 
 The Kraken adapter uses the [public v2 ticker stream](https://docs.kraken.com/exchange/api-reference/spot-websocket-v2/ticker), trade-triggered updates, exact USD instrument names and source timestamps. These are exchange-specific last-trade observations. They can differ from the chart's CoinGecko aggregate; the alert identifies the venue and pair. USDT observations are never relabelled USD.
 
@@ -43,7 +43,13 @@ The three additional tokens are fixed in `alerts/core.mjs`:
 | Wiki Cat | BNB Chain | `0x6ec90334d89dbdc89e08a133271be3d104128edb` | `wiki-cat` |
 | CREPE | BNB Chain | `0xeb2b7d5691878627eff20492ca7c9a71228d931d` | `crepe-2` |
 
-A future DEX adapter must independently verify chain ID, exact pool token addresses, decimals, current reserves/liquidity, trade/block timestamps and an actual continuous event connection. It must handle reconnect gaps and reorganisations and label any wrapped-native/USD conversion as an indicative pool price. Candidate pool discovery alone does not establish that these checks pass. The implementation does not present cached DEX pages, invented observations or the chart's older snapshots as live triggers.
+The pool adapter uses the fixed Ethereum and BNB Chain endpoints published by [PublicNode](https://www.publicnode.com/). It checks chain ID, exact token addresses, token order and decimals, the pool factory and its pair mapping, and positive reserves. All pool reads are pinned to one block; the block hash is checked again before a quote is accepted. The previous observed block is checked for a reorganisation. A rejected response resets the affected baseline rather than inventing a crossing.
+
+Pool reserves and the relevant Kraken native/USD quote are combined using integer arithmetic, with up to 24 decimal places. The pool block time, native/USD source time, native/USD receipt time and new poll receipt time each constrain freshness. A fresh block cannot conceal a stale conversion quote. The separate reserve-update timestamp is reported as evidence; checking unchanged reserves at a new block does not claim that a new swap occurred. The [pool source notes](pool-price-sources.md) record the exact selected pools, calculation and validation evidence.
+
+Polling aims for one check about every 15 seconds while a pool rule is enabled, or during a bounded five-minute capability check. This samples indicative pool prices and cannot observe every swap or a crossing that reverses between samples. It is not a trade execution quote: liquidity, fees, token transfer rules and market impact can affect an actual trade. The existing CoinGecko chart remains independent.
+
+PublicNode's [terms](https://www.publicnode.com/terms) allow automated endpoint use and displaying blockchain data in an application, subject to changing usage limits and best-effort availability. The adapter honours rate-limit back-off, rejects redirects and bounds response sizes and timeouts. Public endpoint and pool identities were checked on 14 November 2026; sustained operation from the deployed Worker remains a launch check.
 
 ## Threshold rules
 
@@ -53,7 +59,7 @@ For an above rule, the last safe observation is at or below the threshold, and t
 
 One-shot alerts are the default and are disabled when their event is committed. Repeating alerts require a return to the safe side and a new crossing, with a minimum interval of 60 seconds. A crossing suppressed by that interval is not replayed later. A source change, an edited rule, a restart or a monitoring gap establishes a new baseline instead of inventing the path taken while the monitor was unavailable.
 
-Quotes older than 60 seconds by provider time or 30 seconds by receipt time are rejected, as are invalid/future/out-of-order observations. A gap exceeding two minutes cannot generate a historical crossing. These limits prevent stale false alerts but may miss a brief crossing during a gap; the system does not claim every market movement is observed.
+Quotes older than 60 seconds by provider time or 30 seconds by receipt time are rejected, as are invalid/future/out-of-order observations. Composite pool quotes also expire at the earliest deadline of either component. Recovery after a component expires establishes a new baseline. A gap exceeding two minutes cannot generate a historical crossing. These limits prevent stale false alerts but may miss a brief crossing during a gap; the system does not claim every market movement is observed.
 
 The outbox and rule completion are committed before dispatch. Transient failures use a bounded retry with the same event identifier and honour the provider's Retry-After. Up to three attempts are made within the short event lifetime. Exactly-once delivery to a handset is not provable; a request can succeed before its response is lost. Stable notification tags limit duplicate presentation. A structurally valid push received after expiry displays a generic expired-alert notice without its stale price.
 
@@ -69,6 +75,7 @@ The pilot enforces:
 - At most 16 rules per device.
 - At most 20 push attempts per device and 200 globally per UTC day, including test messages and retries.
 - At most one test request per device per minute and 10 new registrations per IP bucket per UTC day.
+- At most 6,000 pool-poll rounds per UTC day, reserved durably before outgoing requests. Each round uses at most six HTTP requests across both chains. Poll deadlines and independent network back-off survive restarts. Exhausting this allowance pauses the three pool-derived coins; exhausting the shared Kraken feed allowance also pauses their USD conversions.
 - A maximum of 1,000,000 incoming feed frames per UTC day, with a lower configurable cap. Small frame allowances are reserved durably before use, preventing restarts from resetting the count. At the cap, monitoring visibly pauses until the next UTC day.
 - A five-minute capability probe when there are no enabled rules, then idle shutdown.
 
@@ -94,7 +101,7 @@ The original authorised-CLI route is also available. Required steps are:
 2. Run `npm ci --ignore-scripts`, `npm run check:worker` and `npm test`. The runtime smoke test needs the freshly built `.worker-build/worker.js` artifact. It uses ephemeral keys and completely mocked outbound connections.
 3. Use `node scripts/create-alert-keys.mjs` to create the dedicated key pair in ignored `alerts/.secrets.json` with owner-only permissions. The script refuses to overwrite an existing file and prints no key values. Store that pair securely for later deployments; rotating it disconnects existing browser subscriptions.
 4. Upload those values as Worker secrets using the authorised Wrangler session, keeping `ALERTS_ENABLED` false initially. `wrangler secret bulk` supports a private JSON input file. Deploy with `npx wrangler deploy --config alerts/wrangler.jsonc` only to the verified free account.
-5. Verify the deployed `/v1/config` response, correct origin restrictions, all five source subscriptions, actual source timestamps and stable reconnect behaviour. Enable the Worker for a controlled pilot and confirm its public configuration honestly reports each feed's status.
+5. Verify the deployed `/v1/config` response, correct origin restrictions, all five Kraken subscriptions, all three pool sources, actual component timestamps and stable reconnect/back-off behaviour. Enable the Worker for a controlled pilot and confirm its public configuration honestly reports each source's status and pool evidence.
 6. Set `alerts-config.json` to the exact returned `https://crypto-watch-alerts.<account>.workers.dev` origin. Build the static site so its content security policy admits that origin only, and publish through the existing GitHub Pages workflow to the existing address.
 7. With an opted-in test device, verify a requested test message with the site open, with it closed and with the phone locked. Test one fresh threshold crossing in a controlled test environment, pause, unsubscribe and reconnect. Record observation, dispatch, provider acceptance and actual display times separately. Do not advertise a guaranteed latency from a provider acceptance timestamp.
 
@@ -104,9 +111,9 @@ The Worker and static site are separate deployments. Publishing static assets al
 
 Unit and integration checks cover exact decimals, both crossing directions, first-sample baseline, one-shot and repeating rules, stale/source/gap handling, device ownership, duplicate registration, per-device event identifiers, atomic outbox commits, deletion, revision conflicts, daily budgets, streamed body limits and retry expiry. Encryption tests independently decrypt the actual payload and verify its VAPID signature. The local Workerd smoke test exercises the compiled Worker with real Durable Object storage and a mocked provider.
 
-Browser checks cover four widths (320, 390, 768 and 1440 pixels), inactive drafts without permission prompts, permission and enrolment, normalised decimals, unsupported-token drafts, revision conflicts, test-request wording and failed/successful disconnection. The existing chart suite retains its all-eight-coin, Price USD, small-number and immediate-retry regression checks. GitHub Actions uses Node 26.13.1, and the market-data deployment workflow is restricted to main-branch pushes. The new verification workflow cannot deploy to Pages.
+Browser checks cover four widths (320, 390, 768 and 1440 pixels), inactive drafts without permission prompts, permission and enrolment, exact pool-token thresholds, indicative-source explanations, temporarily unavailable-token drafts, revision conflicts, test-request wording and failed/successful disconnection. The existing chart suite retains its all-eight-coin, Price USD, small-number and immediate-retry regression checks. GitHub Actions uses Node 26.13.1, and the market-data deployment workflow is restricted to main-branch pushes. The new verification workflow cannot deploy to Pages.
 
-Outstanding launch work is the authorised free backend deployment, real-device delivery testing and validation of the three extra token feeds. For a wider public launch, assess public enrolment abuse protection and account-based recovery before increasing the device cap. The current cap and IP limit are a pilot safeguard, not a complete defence against deliberate registration abuse.
+Outstanding launch work is the authorised free backend deployment, verification of all source adapters from that deployment and real-device delivery testing. For a wider public launch, assess public enrolment abuse protection and account-based recovery before increasing the device cap. The current cap and IP limit are a pilot safeguard, not a complete defence against deliberate registration abuse.
 
 ## Why this version uses Web Push
 

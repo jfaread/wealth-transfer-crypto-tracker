@@ -235,3 +235,54 @@ test('Workerd: actual Durable Object registers, saves drafts, encrypts a mocked 
     await mf.dispose();
   }
 });
+
+test('Workerd: genuine adapter code validates both mocked chains and enables all three pool alert rules', {skip, timeout: 45_000}, async () => {
+  const vapid = generateVAPIDKeys();
+  const mf = makeRuntime({ALERTS_ENABLED: 'true', VAPID_PUBLIC_KEY: vapid.publicKey,
+    VAPID_PRIVATE_KEY: vapid.privateKey, VAPID_SUBJECT: siteUrl, MAX_POOL_POLLS_PER_DAY: '6000'}, 'pool-network-mock', [{
+    name: 'pool-network-mock',
+    modules: [{type: 'ESModule', path: resolve('tests/pool-runtime-mock.mjs')}],
+    modulesRoot: resolve('tests'), compatibilityDate: '2026-11-13',
+    outboundService: async () => {throw new Error('The pool fixture cannot access a public network.');}
+  }]);
+  try {
+    let config = await (await call(mf, '/v1/config')).json();
+    const mockWorker = await mf.getWorker('pool-network-mock');
+    const deadline = Date.now() + 25_000;
+    // Exercise the real 15-second alarm interval. Only the fixture sends native
+    // ticker observations; all JSON-RPC batches stay inside the closed runtime.
+    while (!config.coins.every(coin => coin.enabled) && Date.now() < deadline) {
+      await mockWorker.fetch('https://runtime-capture.invalid/tick');
+      await new Promise(resolveWait => setTimeout(resolveWait, 200));
+      config = await (await call(mf, '/v1/config')).json();
+    }
+    const stats = await (await mockWorker.fetch('https://runtime-capture.invalid/state')).json();
+    assert(config.coins.every(coin => coin.enabled), JSON.stringify({coins: config.coins.map(coin => [coin.id, coin.enabled]), monitor: config.monitor, stats}));
+    assert.equal(stats.rpcCount, 6); assert.equal(stats.blockedCount, 0);
+    assert.equal(config.monitor.poolPollsRemaining, 5999);
+    assert.equal(config.monitor.poolPollingIntervalMs, 15_000);
+    for (const coin of config.coins.filter(coin => ['KISHU', 'WKC', 'CREPE'].includes(coin.id))) {
+      assert.equal(coin.indicative, true); assert.equal(coin.samplingMs, 15_000);
+      assert.match(coin.source, /Indicative/); assert(coin.evidence.freshUntil > Date.now());
+      assert.equal(coin.evidence.conversionPrice, coin.id === 'KISHU' ? '2000' : '600');
+      assert.equal(coin.evidence.chainId, coin.id === 'KISHU' ? 1 : 56);
+    }
+    const registration = await call(mf, '/v1/devices', {method: 'POST', body: {
+      subscription: {endpoint: 'https://fcm.googleapis.com/fcm/send/pool-runtime-fixture-only',
+        keys: {p256dh: vapid.publicKey, auth: randomBytes(16).toString('base64url')}},
+      consentVersion: config.consentVersion, operationId: `pool_runtime_${randomUUID()}`
+    }});
+    assert.equal(registration.status, 201); const device = await registration.json();
+    const rules = ['KISHU', 'WKC', 'CREPE'].map(coin => ({id: randomUUID(), coin, direction: 'above',
+      threshold: coin === 'KISHU' ? '0.000000000005' : '0.000002', repeat: false, enabled: true}));
+    const saved = await call(mf, '/v1/rules', {method: 'PUT', token: device.token, body: {revision: 0, rules}});
+    assert.equal(saved.status, 200); assert.deepEqual((await saved.json()).rules, rules);
+    const state = await (await call(mf, '/v1/device', {token: device.token})).json();
+    assert.equal(state.events.length, 0, 'first observations establish baselines');
+    for (let i = 0; i < 3; i++) await call(mf, '/v1/config');
+    const finalStats = await (await mockWorker.fetch('https://runtime-capture.invalid/state')).json();
+    assert.equal(finalStats.rpcCount, 6, 'configuration reads cannot defeat the reserved poll interval');
+    assert.equal(finalStats.blockedCount, 0);
+    assert.equal((await call(mf, '/v1/device', {method: 'DELETE', token: device.token})).status, 200);
+  } finally {await mf.dispose();}
+});
