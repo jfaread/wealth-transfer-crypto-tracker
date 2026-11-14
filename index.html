@@ -72,6 +72,8 @@ html,body{background:#120e24}body{background:radial-gradient(ellipse at 85% 0%,#
     <div id="wa-status" class="wa-status" role="status" aria-live="polite">Phone alerts are being prepared. Background monitoring is not enabled yet.</div>
     <div id="wa-message" class="wa-message" role="status" aria-live="polite" hidden></div>
     <div class="wa-actions"><button id="wa-connect" class="wa-button wa-primary" type="button" hidden>Enable phone alerts</button><button id="wa-test" class="wa-button" type="button" hidden>Request test alert</button><button id="wa-refresh" class="wa-button" type="button">Check service</button><button id="wa-disconnect" class="wa-button wa-danger" type="button" hidden>Disconnect this device</button><button id="wa-reset" class="wa-button wa-danger" type="button" hidden>Reset unfinished setup</button></div>
+    <p id="wa-test-help" class="wa-small" hidden>Request test alert sends a phone notification titled “Crypto-Watch test”. It does not open a separate message, SMS or WhatsApp conversation. Tapping the notification returns to Crypto-Watch. While this page is open, received notification text also appears below. Check Notification Centre and this app’s notification settings if no banner appears.</p>
+    <section id="wa-received" class="wa-status" role="status" aria-live="polite" hidden><strong id="wa-received-title"></strong><p id="wa-received-body"></p><small id="wa-received-time"></small></section>
     <p id="wa-consent" class="wa-small" hidden>Enabling alerts shares this device’s push subscription and your chosen thresholds with the Crypto-Watch alert service. No telephone number, wallet or messaging account is needed. Enrol each device separately.</p>
     <p id="wa-monitor" class="wa-monitor" hidden></p>
     <details id="wa-help"><summary>How phone alerts work</summary><p id="wa-install">On iPhone or iPad: open this site in Safari, choose Share, then Add to Home Screen. Turn on Open as Web App if shown, tap Add, and reopen Crypto-Watch from its new icon. iOS or iPadOS 16.4 or later is required.</p><p>On Android, open Crypto-Watch in Chrome and allow notifications. Installing it from the browser menu is optional. On a computer, allow website notifications in a supported browser.</p><p>Alerts continue while you are viewing the chart and after you close it. While you are viewing Crypto-Watch, a price-alert banner also appears on the page. Closing the chart does not switch off a connected background monitor. Device connectivity, browser settings and Focus or Do Not Disturb can delay or silence notifications. Alerts are not guaranteed to arrive instantly. Use the test button after connecting.</p><p>Thresholds saved only on this device are drafts and do not send notifications. A browser permission prompt or a test request alone does not prove that background alerts are active.</p><p>The free pilot allows up to 20 notifications per device and 200 across all devices per day, including test alerts. Tests are limited to one per minute. Extra notifications are not replayed after the daily allowance resets.</p></details>
@@ -462,31 +464,57 @@ $('share').addEventListener('click',()=>{const url=link();if(!url){openLinkOptio
 $('csv').addEventListener('click',()=>{if(!state.data.size)return;const rows=['coin,observation_utc,price,currency,change_from_start_pct,source,sampling'];for(const[id,d]of state.data)for(const p of d.points)if(p.t<=state.spec.end)rows.push([id,new Date(p.t).toISOString(),p.p,state.spec.currency,p.r,state.spec.source,state.spec.interval].join(','));downloadBlob(new Blob([rows.join('\r\n')],{type:'text/csv;charset=utf-8'}),'wealth-transfer-'+state.range+'.csv');});
 window.WealthTransferCryptoTracker=Object.freeze({version:'3.0.0',getState:()=>({range:state.range,coins:state.coins.slice(),mode:state.mode,busy:state.busy,zoom:state.zoom,errors:state.errors.slice(),start:state.spec?.start,end:state.spec?.end,series:[...state.data].map(([id,d])=>({id,count:d.points.length,first:d.points[0],last:d.points.at(-1),gaps:d.gaps}))}),getDiagnostics:()=>({version:'3.0.0',newsBusy,autoRefresh,newsPaused,newsCount:newsItems.length,lastNewsCheck,lastPricesCheck,source:state.spec?.source,currency:state.spec?.currency,saved:state.spec?.saved}),rangeSpec});
 /* One page-owned refresh loop. No account, schedule, AI call or background service. */
-const FEEDS=[{name:'CoinDesk',url:'https://www.coindesk.com/arc/outboundfeeds/rss/',hosts:['coindesk.com','www.coindesk.com']},{name:'Cointelegraph',url:'https://cointelegraph.com/rss',hosts:['cointelegraph.com','www.cointelegraph.com']},{name:'Jon George / MyDefiGuru',url:'https://www.youtube.com/feeds/videos.xml?channel_id=UCXJQosNTxvmyd925enPbQPw',hosts:['www.youtube.com','youtube.com'],maxAge:30*86400000}];
+const FEEDS=[{name:'CoinDesk',url:'https://www.coindesk.com/arc/outboundfeeds/rss/',hosts:['coindesk.com','www.coindesk.com']},{name:'Cointelegraph',url:'https://cointelegraph.com/rss',hosts:['cointelegraph.com','www.cointelegraph.com']},{name:'Jon George / MyDefiGuru',url:'https://www.youtube.com/feeds/videos.xml?channel_id=UCXJQosNTxvmyd925enPbQPw',hosts:['www.youtube.com','youtube.com'],maxAge:Infinity}];
 const reduced=window.matchMedia('(prefers-reduced-motion: reduce)');
-let autoRefresh=storageRead('auto')!==false,newsPaused=reduced.matches,newsBusy=false,lastNewsCheck=0,lastPricesCheck=0,newsItems=[],newsSavedAt=0,newsController=null;
+let autoRefresh=storageRead('auto')!==false,newsPaused=reduced.matches,newsBusy=false,lastNewsCheck=0,lastPricesCheck=0,newsItems=[],newsSavedAt=0,newsController=null,jonCheckedAt=0,jonCached=true;
 function textOnly(value){
  return String(value||'').slice(0,5000).replace(/<[^>]*>/g,'').replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,(_,code)=>{if(code[0]==='#'){const n=code[1].toLowerCase()==='x'?parseInt(code.slice(2),16):parseInt(code.slice(1),10);return n>0&&n<=0x10ffff?String.fromCodePoint(n):'';}return{amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:' '}[code.toLowerCase()]||'';}).replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g,' ').replace(/\s+/g,' ').trim().slice(0,260);
 }
 function cleanNews(items){
  if(!Array.isArray(items))return[];
  const seen=new Set(),titles=new Set(),now=Date.now();
- return items.slice(0,200).flatMap(item=>{try{
+ const valid=items.slice(0,200).flatMap(item=>{try{
   if(!item||typeof item!=='object'||typeof item.link!=='string'||item.link.length>2048)return[];
   const url=new URL(item.link),feed=FEEDS.find(f=>f.hosts.includes(url.hostname));
   let date=String(item.pubDate||item.publishedAt||'');if(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(date))date=date.replace(' ','T')+'Z';
+  if(!feed)return[];
   if(feed.name==='Jon George / MyDefiGuru'&&(url.pathname!=='/watch'||! /^[A-Za-z0-9_-]{11}$/.test(url.searchParams.get('v')||'')))return[];
   const t=typeof item.publishedAt==='number'?item.publishedAt:Date.parse(date),title=textOnly(item.title);
-  if(url.protocol!=='https:'||url.username||url.password||url.port||!feed||!title||!Number.isFinite(t)||t>now+300000||now-t>(feed.maxAge||7*86400000))return[];
+  if(url.protocol!=='https:'||url.username||url.password||url.port||!feed||!title||!Number.isFinite(t)||t<=0||t>now+300000||now-t>(feed.maxAge||7*86400000))return[];
   for(const k of [...url.searchParams.keys()])if(k.toLowerCase().startsWith('utm_'))url.searchParams.delete(k);url.hash='';
-  const key=url.href,titleKey=title.toLowerCase();if(seen.has(key)||titles.has(titleKey))return[];seen.add(key);titles.add(titleKey);
+  const key=url.href,titleKey=feed.name+'|'+title.toLowerCase();if(seen.has(key)||titles.has(titleKey))return[];seen.add(key);titles.add(titleKey);
   return[{title,link:key,source:feed.name,publishedAt:t}];
- }catch(_){return[];}}).sort((a,b)=>b.publishedAt-a.publishedAt).slice(0,30);
+ }catch(_){return[];}}).sort((a,b)=>b.publishedAt-a.publishedAt);
+ return [...valid.filter(n=>n.source!=='Jon George / MyDefiGuru').slice(0,30),...valid.filter(n=>n.source==='Jon George / MyDefiGuru').slice(0,5)].sort((a,b)=>b.publishedAt-a.publishedAt);
+}
+// Resolve only a known feed's canonical publisher link; never follow a redirect.
+function feedItems(feed,packet){
+ if(packet?.status!=='ok'||packet.feed?.url!==feed.url||!Array.isArray(packet.items))throw Error('Feed identity unavailable');
+ return packet.items.slice(0,100).flatMap(item=>{
+  if(!item||typeof item!=='object')return[];
+  let canonical=null;
+  for(const candidate of [item.link,item.guid]){try{const u=new URL(candidate);if(u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&feed.hosts.includes(u.hostname)){canonical=u.href;break;}}catch(_){}}
+  if(feed.name==='Jon George / MyDefiGuru'){
+   const match=typeof item.guid==='string'&&item.guid.match(/^yt:video:([A-Za-z0-9_-]{11})$/);
+   if(match){if(canonical){const u=new URL(canonical);if(u.pathname!=='/watch'||u.searchParams.get('v')!==match[1])return[];}canonical='https://www.youtube.com/watch?v='+match[1];}
+  }
+  return canonical?[{...item,link:canonical}]:[];
+ });
+}
+async function restoreJonSnapshot(signal){
+ const value=await requestJSON(new URL('./data/jon-george.json',location.href).href,signal,4000);
+ const checkedAt=Date.parse(value?.checkedAt||'');
+ if(value?.version!==1||value.channelId!=='UCXJQosNTxvmyd925enPbQPw'||value.sourceUrl!==FEEDS[2].url||!Number.isFinite(checkedAt)||checkedAt<=0||checkedAt>Date.now()+300000||!Array.isArray(value.items)||value.items.length>5)return;
+ const items=cleanNews(value.items).filter(n=>n.source==='Jon George / MyDefiGuru');
+ if(!items.length||signal.aborted)return;
+ newsItems=cleanNews([...newsItems,...items]);
+ if(checkedAt>jonCheckedAt){jonCheckedAt=checkedAt;jonCached=true;}
+ renderNews();
 }
 function syncNewsMotion(){const running=!newsPaused&&!reduced.matches&&!document.hidden;$('wtct-track').dataset.running=String(running);$('wtct-news-pause').textContent=newsPaused||reduced.matches?'Resume':'Pause';$('wtct-news-pause').setAttribute('aria-pressed',String(newsPaused||reduced.matches));}
 function renderNews(){
- const jonItems=newsItems.filter(n=>n.source==='Jon George / MyDefiGuru');$('wtct-jon-count').textContent=jonItems.length?jonItems.length+' updates':'Updates';$('wtct-jon-status').textContent=jonItems.length?jonItems.length+' public video updates available. Creator commentary; separate from market reporting.':'No recent public updates loaded. Use the source links above; private community posts are not republished.';const jonList=$('wtct-jon-list');jonList.replaceChildren();for(const n of jonItems){const li=document.createElement('li'),a=document.createElement('a'),title=document.createElement('span'),date=document.createElement('time'),arrow=document.createElement('span');li.className='wtct-jon-card';title.className='wtct-jon-title';title.textContent=n.title;date.dateTime=new Date(n.publishedAt).toISOString();date.textContent=dateText(n.publishedAt)+' '+zoneLabel();arrow.className='wtct-jon-arrow';arrow.textContent='↗';arrow.setAttribute('aria-hidden','true');a.href=n.link;a.target='_blank';a.rel='noopener noreferrer';a.append(title,date,arrow);li.append(a);jonList.append(li);}const track=$('wtct-track'),list=$('wtct-news-list');track.replaceChildren();list.replaceChildren();$('wtct-ticker').classList.toggle('empty',!newsItems.length);
- if(!newsItems.length){track.textContent='Headlines unavailable. Open the reading list for source links.';const li=document.createElement('li');li.textContent='No current publisher headlines have loaded. ';for(const f of FEEDS){const a=document.createElement('a');a.href='https://'+f.hosts[0]+'/';a.target='_blank';a.rel='noopener noreferrer';a.textContent=f.name;li.append(a,document.createTextNode(' '));}list.append(li);syncNewsMotion();return;}
+ const jonItems=newsItems.filter(n=>n.source==='Jon George / MyDefiGuru').slice(0,5);$('wtct-jon-count').textContent=jonItems.length?jonItems.length+' updates':'Updates';$('wtct-jon-status').textContent=jonItems.length?'Latest '+jonItems.length+' public video updates'+(jonCheckedAt?' · '+(jonCached?'saved feed checked ':'feed checked ')+dateText(jonCheckedAt)+' '+zoneLabel():'')+'. Creator commentary; separate from market reporting.':'No recent public updates loaded. Use the source links above; private community posts are not republished.';const jonList=$('wtct-jon-list');jonList.replaceChildren();for(const n of jonItems){const li=document.createElement('li'),a=document.createElement('a'),title=document.createElement('span'),date=document.createElement('time'),arrow=document.createElement('span');li.className='wtct-jon-card';title.className='wtct-jon-title';title.textContent=n.title;date.dateTime=new Date(n.publishedAt).toISOString();date.textContent=dateText(n.publishedAt)+' '+zoneLabel();arrow.className='wtct-jon-arrow';arrow.textContent='↗';arrow.setAttribute('aria-hidden','true');a.href=n.link;a.target='_blank';a.rel='noopener noreferrer';a.append(title,date,arrow);li.append(a);jonList.append(li);}const track=$('wtct-track'),list=$('wtct-news-list');track.replaceChildren();list.replaceChildren();$('wtct-ticker').classList.toggle('empty',!newsItems.some(n=>n.source!=='Jon George / MyDefiGuru'));
+ if(!newsItems.some(n=>n.source!=='Jon George / MyDefiGuru')){track.textContent='Headlines unavailable. Open the reading list for source links.';const li=document.createElement('li');li.textContent='No current publisher headlines have loaded. ';for(const f of FEEDS){const a=document.createElement('a');a.href='https://'+f.hosts[0]+'/';a.target='_blank';a.rel='noopener noreferrer';a.textContent=f.name;li.append(a,document.createTextNode(' '));}list.append(li);syncNewsMotion();return;}
  const group=document.createElement('div');group.className='wtct-newsitems';
  for(const n of newsItems.filter(n=>n.source!=='Jon George / MyDefiGuru')){const a=document.createElement('a');a.href=n.link;a.target='_blank';a.rel='noopener noreferrer';const label=document.createElement('small');label.textContent=n.source.toUpperCase();const text=document.createElement('span');text.textContent=n.title;a.append(label,text);a.title=n.source+' · '+dateText(n.publishedAt)+' '+zoneLabel();group.append(a);const li=document.createElement('li'),la=document.createElement('a');la.href=n.link;la.rel='noopener noreferrer';la.target='_blank';la.textContent=n.title;const date=document.createElement('small');date.textContent=' — '+n.source+' · '+dateText(n.publishedAt)+' '+zoneLabel();li.append(la,date);list.append(li);}
  const duplicate=group.cloneNode(true);duplicate.setAttribute('aria-hidden','true');duplicate.setAttribute('inert','');duplicate.querySelectorAll('a').forEach(a=>a.tabIndex=-1);track.append(group,duplicate);requestAnimationFrame(()=>track.style.setProperty('--wtct-duration',Math.max(50,group.scrollWidth/34)+'s'));syncNewsMotion();
@@ -495,19 +523,23 @@ async function refreshNews(force=false){
  if(newsBusy||document.hidden||(!force&&Date.now()-lastNewsCheck<300000))return;
  newsBusy=true;lastNewsCheck=Date.now();$('wtct-news-refresh').disabled=true;newsController=new AbortController();const signal=newsController.signal;
  const failures=[];let items=[];
+ const snapshot=restoreJonSnapshot(signal).catch(()=>{});
  try{
   if(serverAPI){const j=await requestJSON(new URL('./api/news',location.href).href,signal,10000);if(!Array.isArray(j?.items))throw Error('Unexpected feed data');items=cleanNews(j.items);if(Array.isArray(j.errors)&&j.errors.length)failures.push('Some publishers unavailable');}
   else{
-   const results=await Promise.allSettled(FEEDS.map(async f=>{const j=await requestJSON('https://api.rss2json.com/v1/api.json?rss_url='+encodeURIComponent(f.url),signal,9000);if(j?.status!=='ok'||!Array.isArray(j.items))throw Error('Feed unavailable');return j.items;}));
+   const results=await Promise.allSettled(FEEDS.map(async f=>{const j=await requestJSON('https://api.rss2json.com/v1/api.json?rss_url='+encodeURIComponent(f.url),signal,9000);return feedItems(f,j);}));
    items=cleanNews(results.flatMap((r,i)=>{if(r.status==='fulfilled')return r.value;failures.push(FEEDS[i].name+' unavailable');return[];}));
+   const jon=cleanNews(results[2].status==='fulfilled'?results[2].value:[]).filter(n=>n.source==='Jon George / MyDefiGuru');
+   jonCached=!jon.length;if(jon.length)jonCheckedAt=Date.now();
   }
+  await snapshot;
   if(signal.aborted)return;
-  if(items.length){newsItems=items;newsSavedAt=Date.now();storageWrite('news',{items:newsItems,savedAt:newsSavedAt});$('wtct-news-status').textContent=items.filter(n=>n.source!=='Jon George / MyDefiGuru').length+' headlines · checked '+dateText(newsSavedAt)+' '+zoneLabel()+(failures.length?' · some sources unavailable':'')+' · checks: 5 min';}
+  if(items.length){newsItems=cleanNews([...items,...newsItems]);newsSavedAt=Date.now();storageWrite('news',{items:newsItems,savedAt:newsSavedAt,jonCheckedAt});$('wtct-news-status').textContent=items.filter(n=>n.source!=='Jon George / MyDefiGuru').length+' headlines · checked '+dateText(newsSavedAt)+' '+zoneLabel()+(failures.length?' · some sources unavailable':'')+' · checks: 5 min';}
   else{newsItems=cleanNews(newsItems);$('wtct-news-status').textContent=newsItems.length?'Feed refresh failed · cached headlines from '+dateText(newsSavedAt)+' '+zoneLabel():'News unavailable · free-feed cache and limits may apply';}
  }catch(e){if(signal.aborted)return;newsItems=cleanNews(newsItems);$('wtct-news-status').textContent=newsItems.length?'Feed refresh failed · cached headlines from '+dateText(newsSavedAt)+' '+zoneLabel():'News unavailable · free-feed cache and limits may apply';}
  finally{newsBusy=false;if(signal.aborted)lastNewsCheck=0;$('wtct-news-refresh').disabled=false;renderNews();}
 }
-const storedNews=storageRead('news');if(storedNews&&Number.isFinite(storedNews.savedAt)&&storedNews.savedAt>0&&storedNews.savedAt<=Date.now()+300000){newsItems=cleanNews(storedNews.items);newsSavedAt=storedNews.savedAt;if(newsItems.length)$('wtct-news-status').textContent='Cached headlines · '+dateText(newsSavedAt)+' '+zoneLabel();}renderNews();
+const storedNews=storageRead('news');if(storedNews&&Number.isFinite(storedNews.savedAt)&&storedNews.savedAt>0&&storedNews.savedAt<=Date.now()+300000){newsItems=cleanNews(storedNews.items);newsSavedAt=storedNews.savedAt;jonCheckedAt=Number.isFinite(storedNews.jonCheckedAt)&&storedNews.jonCheckedAt>0&&storedNews.jonCheckedAt<=Date.now()+300000?storedNews.jonCheckedAt:0;if(newsItems.length)$('wtct-news-status').textContent='Cached headlines · '+dateText(newsSavedAt)+' '+zoneLabel();}renderNews();
 $('wtct-news-pause').addEventListener('click',()=>{if(reduced.matches){toast('Reduced-motion is enabled on your device. Use the reading list for all headlines.');return;}newsPaused=!newsPaused;syncNewsMotion();});
 $('wtct-news-refresh').addEventListener('click',()=>{if(Date.now()-lastNewsCheck<30000){toast('To respect free-feed limits, allow 30 seconds between manual checks.');return;}refreshNews(true);});
 function syncAuto(){$('wtct-auto').textContent='Auto-refresh: '+(autoRefresh?'on':'off');$('wtct-auto').setAttribute('aria-pressed',String(autoRefresh));}

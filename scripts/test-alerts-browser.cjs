@@ -220,6 +220,14 @@ const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.jso
   conflict=true;await add(page,'ETH','2000');assert.equal(saved.length,4);assert.match(await page.locator('#wa-message').innerText(),/latest list has been loaded/);
   await page.locator('#wa-save-rule').click();await page.waitForFunction(()=>document.getElementById('wtct-alerts-dialog').getAttribute('aria-busy')==='false');assert.equal(saved.length,5);
   await page.locator('#wa-test').click();await page.getByText(/Test notification requested/).waitFor();assert.equal(testRequests,1);
+  assert.match(await page.locator('#wa-test-help').innerText(),/does not open a separate message/);
+  assert.equal(await page.locator('#wa-received').isVisible(),false,'requesting a test is not a receipt');
+  const testPush={type:'wtct-price-alert',version:1,eventId:'qa-test-received',title:'Crypto-Watch test',body:'Phone alerts are connected to this browser.',url:SITE,observedAt:Date.now(),expiresAt:Date.now()+120000,expired:false};
+  await page.evaluate(({message,site})=>window.__alertListeners.message({source:{scriptURL:site+'sw.js'},data:message}),{message:testPush,site:SITE});
+  assert.equal(await page.locator('#wa-received').isVisible(),true);
+  assert.equal(await page.locator('#wa-received-title').innerText(),'Crypto-Watch test');
+  assert.match(await page.locator('#wa-received-body').innerText(),/Phone alerts are connected/);
+  assert.match(await page.locator('#wa-received-time').innerText(),/does not confirm a lock-screen banner/);
   await page.locator('#wa-close').click();
   const foreground={type:'wtct-price-alert',version:1,eventId:'qa-foreground-1',title:'BTC price alert',body:'BTC crossed above US$100. Observed US$101 on Kraken BTC/USD.',url:SITE,observedAt:Date.now(),expiresAt:Date.now()+120000,expired:false};
   await page.evaluate(({message,site})=>window.__alertListeners.message({source:{scriptURL:site+'sw.js'},data:message}),{message:foreground,site:SITE});

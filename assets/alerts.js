@@ -107,10 +107,18 @@
 
   function renderPageAlert() {
     const banner = $('wtct-alert-banner');
-    if (!banner || !pageAlert || banner.hidden) return;
+    if (!pageAlert) return;
     clearTimeout(pageAlertExpiry);
     const expired = pageAlert.expired || pageAlert.expiresAt <= Date.now() || Date.now() - pageAlert.observedAt > 300000;
     if (expired) pageAlert.expired = true;
+    const received = $('wa-received');
+    if (received) {
+      received.hidden = false;
+      $('wa-received-title').textContent = expired ? 'Earlier notification - expired' : pageAlert.title;
+      $('wa-received-body').textContent = expired ? 'This notification is no longer current. Check the latest prices before acting.' : pageAlert.body;
+      $('wa-received-time').textContent = 'Received in this browser · ' + time(pageAlert.observedAt) + '. This does not confirm a lock-screen banner was displayed.';
+    }
+    if (!banner) return;
     $('wa-banner-title').textContent = expired ? 'An earlier Crypto-Watch alert expired' : pageAlert.title;
     $('wa-banner-body').textContent = expired ? 'This earlier alert has expired. Check the latest chart data before acting, or open Price alerts to review your settings.' : pageAlert.body;
     $('wa-banner-time').dateTime = new Date(pageAlert.observedAt).toISOString();
@@ -217,6 +225,7 @@
     $('wa-connect').textContent = typeof Notification !== 'undefined' && Notification.permission === 'granted' ? 'Finish enabling alerts' : 'Enable phone alerts';
     $('wa-consent').hidden = !canConnect;
     $('wa-test').hidden = !connected;
+    if ($('wa-test-help')) $('wa-test-help').hidden = !connected;
     $('wa-test').disabled = busy || !config?.enabled || remote.subscriptionExpired;
     $('wa-disconnect').hidden = !usableAuth();
     $('wa-disconnect').disabled = busy;
@@ -570,7 +579,8 @@
   $('wa-test').addEventListener('click', () => perform(async () => {
     if (!verified || !config?.enabled) throw new Error('Check this device’s connection before requesting a test.');
     await api('/v1/test', 'POST', {}, true);
-    notice('Test notification requested. Check this device’s notifications; this request does not guarantee it will be displayed.');
+    notice('Test notification requested. Look for “Crypto-Watch test” in this device’s notifications or Notification Centre. No separate message window opens. The request alone does not confirm delivery.');
+    $('wa-message').scrollIntoView({block:'nearest'});
   }));
 
   $('wa-disconnect').addEventListener('click', () => perform(async () => {
