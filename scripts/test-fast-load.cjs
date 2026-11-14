@@ -146,11 +146,14 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  const shibState=await shibOnly.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
  assert.deepEqual(shibOnly.calls.requestedCoins,['shiba-inu']);assert.equal(shibOnly.calls.cache,1);assert.deepEqual(shibState.series.map(x=>x.id),['SHIB']);assert.equal(shibState.series[0].last.p,cachedQuotes['shiba-inu'].usd);await shibOnly.page.close();
  // A recently written local cache still shows its oldest selected quote's actual age.
- const stored=structuredClone(oldSnapshots.ranges['1D']),cacheNow=Date.now(),shift=cacheNow-45*60000-stored.spec.end;
+ const stored=structuredClone(oldSnapshots.ranges['1D']),cacheNow=Date.now(),staleAt=cacheNow-45*60000,shift=staleAt-stored.spec.end;
  stored.savedAt=cacheNow;stored.spec.quoteCheckedAt=cacheNow;stored.spec.start+=shift;stored.spec.end=cacheNow;
  for(const [id,d]of stored.data){
   for(const point of d.points)point.t+=shift;
-  if(id!=='BTC'){const last=d.points.at(-1);d.points.push({...last,t:cacheNow,gapBefore:true});d.gaps++;}
+  // Provider series can end at different times. Pin the intended fixture age
+  // independently of the prepared snapshot's newest series.
+  const last=d.points.at(-1),target=id==='BTC'?staleAt:cacheNow;
+  if(last.t<target){const gapBefore=target-last.t>stored.spec.step*1.5;d.points.push({...last,t:target,gapBefore});if(gapBefore)d.gaps++;}
  }
  const local=await openRefreshPage({stored});
  await local.page.getByText(/^Older quotes ·/).waitFor();assert.equal(local.calls.quote,0);assert.equal((await local.page.evaluate(()=>window.WealthTransferCryptoTracker.getState())).end,cacheNow);assert(await local.page.locator('#warning').isVisible());
