@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths:
+      - 'alerts/**'
+      - 'tests/**'
       - '.github/workflows/package-alert-deployment.yml'
 permissions:
   contents: write
@@ -38,24 +40,14 @@ jobs:
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import crypto from 'node:crypto';
-          import zlib from 'node:zlib';
           const file='.worker-build/worker.js';
           if (!fs.existsSync(file)) throw new Error('Expected Worker bundle is missing.');
           const bytes=fs.readFileSync(file);
           const sha256=crypto.createHash('sha256').update(bytes).digest('hex');
-          const compressed=zlib.gzipSync(bytes,{level:9});
-          const encoded=compressed.toString('base64');
           fs.mkdirSync('deployment-artifacts',{recursive:true});
           fs.writeFileSync('deployment-artifacts/worker.js',bytes);
-          const parts=[];
-          for(let i=0;i<encoded.length;i+=8000){
-            const name=`worker-gzip-part-${String(parts.length+1).padStart(2,'0')}.txt`;
-            const text=encoded.slice(i,i+8000);
-            fs.writeFileSync(`deployment-artifacts/${name}`,text+'\n');
-            parts.push({name,characters:text.length});
-          }
-          fs.writeFileSync('deployment-artifacts/manifest.json',JSON.stringify({sourceCommit:process.env.GITHUB_SHA,runId:process.env.GITHUB_RUN_ID,node:process.version,sha256,bytes:bytes.length,gzipBytes:compressed.length,parts},null,2)+'\n');
-          console.log(JSON.stringify({sha256,bytes:bytes.length,gzipBytes:compressed.length,parts:parts.length}));
+          fs.writeFileSync('deployment-artifacts/manifest.json',JSON.stringify({sourceCommit:process.env.GITHUB_SHA,runId:process.env.GITHUB_RUN_ID,node:process.version,sha256,bytes:bytes.length},null,2)+'\n');
+          console.log(JSON.stringify({sha256,bytes:bytes.length}));
           NODE
       - name: Save the tested public bundle on a separate deployment branch
         run: |

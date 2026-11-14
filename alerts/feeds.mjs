@@ -1,4 +1,5 @@
 import {decimalFromNumber} from './core.mjs';
+import {createKrakenRestFeed} from './rest-feed.mjs';
 
 export const KRAKEN_WS_URL = 'https://ws.kraken.com/v2';
 export const KRAKEN_SYMBOLS = Object.freeze({
@@ -14,7 +15,7 @@ export function krakenSubscription() {
   }};
 }
 
-/** Only recognise exact, true-USD instruments. No fallback or historical prices. */
+/** Only exact USD instruments and provider timestamps; never static chart history. */
 export function parseKrakenMessage(raw, receivedAt = Date.now()) {
   if (typeof raw !== 'string' || raw.length > 64_000) return {quotes: [], reason: 'invalid_frame'};
   let message;
@@ -46,8 +47,9 @@ export function reconnectDelay(attempt) {
   return Math.min(60_000, 1_000 * (2 ** Math.max(0, Math.min(6, Math.trunc(attempt) || 0))));
 }
 
-/** Cloudflare's documented outbound WebSocket handshake; injectable for local tests. */
-export async function connectKraken({fetchImpl = globalThis.fetch, onMessage, onClose, onOpen, timeoutMs = 10_000} = {}) {
+/** Prefer the stream; use paced timestamped trades when its endpoint rate-limits. */
+export async function connectKraken({fetchImpl = globalThis.fetch, onMessage, onClose, onOpen, timeoutMs = 10_000,
+  restConnector = createKrakenRestFeed} = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.max(1, Math.min(10_000, timeoutMs)));
   let response;
@@ -57,10 +59,12 @@ export async function connectKraken({fetchImpl = globalThis.fetch, onMessage, on
     });
     const socket = response.webSocket;
     if (response.status !== 101 || !socket) {
-      // A failed upgrade is still an HTTP response. Release its body before
-      // reconnecting so it cannot retain a connection or block other requests.
       try { await response.body?.cancel(); } catch {}
       controller.abort();
+      if (response.status === 429) {
+        clearTimeout(timeout);
+        return await restConnector({fetchImpl, onMessage, onClose, onOpen});
+      }
       throw new Error('The live price connection is unavailable.');
     }
     socket.accept();
