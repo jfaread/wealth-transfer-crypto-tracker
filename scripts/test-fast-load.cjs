@@ -1,8 +1,19 @@
 const {chromium}=require('playwright');
 const fs=require('node:fs/promises');
 const assert=require('node:assert/strict');
+const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
 (async()=>{
  const html=await fs.readFile('_site/index.html','utf8'),snapshots=await fs.readFile('_site/data/ranges.json','utf8');
+ const prepared=JSON.parse(snapshots);
+ for(const range of ['1D','5D','1M','6M','YTD','1Y']){
+  const bundle=prepared.ranges[range];
+  assert(bundle,'Missing prepared '+range+' period');
+  assert.deepEqual(bundle.data.map(([id])=>id),CHART_COINS,'Every prepared period must contain all nine chart currencies');
+  const shib=new Map(bundle.data).get('SHIB');
+  assert(shib.points.length>=2&&shib.points.every(point=>Number.isFinite(point.p)&&point.p>0),'SHIB needs at least two positive price observations in '+range);
+  assert.equal(shib.points[0].t,bundle.spec.start);
+  assert(bundle.spec.end-shib.points.at(-1).t<=bundle.spec.step,'SHIB history must cover the prepared '+range+' period');
+ }
  const assetTypes={'/assets/alerts.js':'text/javascript','/assets/alerts.css':'text/css','/alerts-config.json':'application/json','/manifest.webmanifest':'application/manifest+json','/sw.js':'text/javascript','/icons/cw.svg':'image/svg+xml','/icons/cw-192.png':'image/png','/icons/cw-512.png':'image/png'};
  const assets=new Map(await Promise.all(Object.entries(assetTypes).map(async([path,contentType])=>[path,{contentType,body:await fs.readFile('_site'+path)}])));
  async function serveAsset(route){const u=new URL(route.request().url());if(u.origin!=='https://tracker.test'||!assets.has(u.pathname))return false;await route.fulfill(assets.get(u.pathname));return true;}
@@ -11,41 +22,50 @@ const assert=require('node:assert/strict');
   const page=await browser.newPage({viewport:{width,height:900},reducedMotion:'reduce'});let providerCalls=0,snapshotCalls=0;page.on('pageerror',e=>console.error('PAGE ERROR',e.stack));
   await page.route('**/*',async route=>{const u=new URL(route.request().url());if(u.origin==='https://tracker.test'&&u.pathname==='/'){await route.fulfill({contentType:'text/html',body:html});return;}if(u.origin==='https://tracker.test'&&u.pathname==='/data/ranges.json'){snapshotCalls++;await new Promise(r=>setTimeout(r,150));await route.fulfill({contentType:'application/json',body:snapshots});return;}if(u.hostname.includes('binance')||u.hostname.includes('coingecko'))providerCalls++;if(await serveAsset(route))return;await route.abort();});
   const started=Date.now();await page.goto('https://tracker.test/',{waitUntil:'domcontentloaded'});await page.locator('[data-series="CREPE"]').waitFor({timeout:1500});const firstChartMs=Date.now()-started;
-  assert.equal(await page.locator('[data-series]').count(),8);assert.equal(providerCalls,0);
+  assert.equal(await page.locator('[data-series]').count(),CHART_COINS.length);assert.equal(providerCalls,0);
   await page.locator('#wtct-timezone').selectOption('America/New_York');assert((await page.locator('#dates').innerText()).includes('Eastern Time'));assert((await page.locator('#hover-date').innerText()).includes('Eastern Time'));assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('wtct:v3:timezone'))),'America/New_York');await page.locator('#wtct-timezone').selectOption('Europe/London');
   const layout=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));assert(layout.scroll<=layout.width,JSON.stringify({width,...layout}));
-  await page.getByRole('button',{name:'One month',exact:true}).click();await page.locator('[data-series="CREPE"]').waitFor({timeout:1500});assert.equal(await page.locator('[data-series]').count(),8);assert(snapshotCalls<=1,'Duplicate snapshot fetches');assert.equal(providerCalls,0);
+  await page.getByRole('button',{name:'One month',exact:true}).click();await page.locator('[data-series="CREPE"]').waitFor({timeout:1500});assert.equal(await page.locator('[data-series]').count(),CHART_COINS.length);assert(snapshotCalls<=1,'Duplicate snapshot fetches');assert.equal(providerCalls,0);
   // Price must work directly from a multi-coin comparison and restore that selection.
   await page.getByRole('button',{name:/^Price ·/}).click();assert.equal(await page.locator('[data-series]').count(),1);assert.equal(await page.locator('[data-series="BTC"]').count(),1);
   await page.getByRole('button',{name:'Toggle Ethereum',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),1);assert.equal(await page.locator('[data-series="ETH"]').count(),1);assert.equal(await page.getByRole('button',{name:/^Price ·/}).getAttribute('aria-pressed'),'true');
-  await page.getByRole('button',{name:'Performance %',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),8);
-  await page.getByRole('button',{name:'Toggle CREPE',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),7);
+  await page.getByRole('button',{name:'Toggle Shiba Inu',exact:true}).click();
+  assert.equal(await page.locator('[data-series]').count(),1);assert.equal(await page.locator('[data-series="SHIB"]').count(),1);
+  assert.equal(await page.locator('#heading').innerText(),'Shiba Inu price');
+  const shibPrice=await page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
+  assert.equal(shibPrice.mode,'price');assert.deepEqual(shibPrice.coins,['SHIB']);assert(shibPrice.series[0].last.p>0);assert.equal(providerCalls,0);
+  assert(!/\d(?:\.\d+)?e[+-]\d+/i.test(await page.locator('#metrics').innerText()),'SHIB price must use ordinary decimals');
+  await page.getByRole('button',{name:'Performance %',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),CHART_COINS.length);
+  assert.deepEqual((await page.evaluate(()=>window.WealthTransferCryptoTracker.getState())).coins,CHART_COINS,'Returning from SHIB price restores the full comparison');
+  await page.getByRole('button',{name:'Toggle CREPE',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),CHART_COINS.length-1);
   await page.getByRole('button',{name:/^Price ·/}).click();await page.getByRole('button',{name:'Toggle Kishu Inu',exact:true}).click();assert.equal(await page.locator('[data-series="KISHU"]').count(),1);assert.equal(providerCalls,0);
-  await page.getByRole('button',{name:'Performance %',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),7);assert.equal(await page.locator('[data-series="CREPE"]').count(),0);
+  await page.getByRole('button',{name:'Performance %',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),CHART_COINS.length-1);assert.equal(await page.locator('[data-series="CREPE"]').count(),0);
   await page.getByRole('button',{name:'Show only Kishu Inu',exact:true}).click();await page.getByRole('button',{name:/^Price ·/}).click();assert.equal(await page.locator('[data-series]').count(),1);assert.equal(providerCalls,0);
   const numericText=(await page.locator('#metrics').innerText())+' '+(await page.locator('#hover-values').innerText())+' '+(await page.locator('#chart text').allTextContents()).join(' ');
   assert(!/\d(?:\.\d+)?e[+-]\d+/i.test(numericText),'Scientific notation remains visible');assert(numericText.includes('0.000000'),'Tiny KISHU price must show a decimal');
   const axisFits=await page.locator('#chart').evaluate(svg=>[...svg.querySelectorAll('text')].every(t=>t.getBBox().x>=0&&t.getBBox().x+t.getBBox().width<=svg.viewBox.baseVal.width+1));assert(axisFits,'Decimal axis labels overflow the chart');
-  await page.getByRole('button',{name:'Compare all eight',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),8);assert(snapshotCalls<=1);
+  await page.getByRole('button',{name:'Compare all nine',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),CHART_COINS.length);assert(snapshotCalls<=1);
   await page.getByRole('button',{name:'Five years',exact:true}).click();await page.getByText('This period could not be loaded',{exact:true}).waitFor();assert.equal(providerCalls,0);
-  await page.getByRole('button',{name:'One day',exact:true}).click();await page.getByRole('button',{name:'Toggle CREPE',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),7);assert(snapshotCalls<=1);
+  await page.getByRole('button',{name:'One day',exact:true}).click();await page.getByRole('button',{name:'Toggle CREPE',exact:true}).click();assert.equal(await page.locator('[data-series]').count(),CHART_COINS.length-1);assert(snapshotCalls<=1);
   await page.getByRole('button',{name:'Toggle CREPE',exact:true}).click();await page.locator('.wtct-jon-disclosure > summary').click();assert(await page.locator('.wtct-jon-content').isVisible());
   await fs.mkdir('qa',{recursive:true});await page.screenshot({path:`qa/tracker-${width}.png`,fullPage:true});console.log(JSON.stringify({width,firstChartMs,snapshotCalls,providerCalls}));await page.close();
  }
  // A stalled snapshot service must not delay the embedded first chart.
- const page=await browser.newPage();await page.route('**/*',async route=>{if(route.request().url()==='https://tracker.test/'){await route.fulfill({contentType:'text/html',body:html});return;}if(await serveAsset(route))return;await route.abort();});await page.goto('https://tracker.test/');assert.equal(await page.locator('[data-series]').count(),8);await page.close();
+ const page=await browser.newPage();await page.route('**/*',async route=>{if(route.request().url()==='https://tracker.test/'){await route.fulfill({contentType:'text/html',body:html});return;}if(await serveAsset(route))return;await route.abort();});await page.goto('https://tracker.test/');assert.equal(await page.locator('[data-series]').count(),CHART_COINS.length);await page.close();
  // Manual refresh must fetch fresh quotes, preserve history and permit immediate retries after failure.
  const oldSnapshots=JSON.parse(snapshots),aged=Date.now()-3*3600000;
  for(const b of Object.values(oldSnapshots.ranges)){b.savedAt=aged;b.spec.historySavedAt=aged;}
  const oldHtml=html.replace(/(<script id="wtct-bootstrap" type="application\/json">)([\s\S]*?)(<\/script>)/,(_,a,payload,b)=>{const j=JSON.parse(payload);for(const x of Object.values(j.ranges)){x.savedAt=aged;x.spec.historySavedAt=aged;}return a+JSON.stringify(j)+b;});
- const cg={BTC:'bitcoin',ETH:'ethereum',BNB:'binancecoin',XRP:'ripple',SOL:'solana',KISHU:'kishu-inu',WKC:'wiki-cat',CREPE:'crepe-2'};
+ const cg={BTC:'bitcoin',ETH:'ethereum',BNB:'binancecoin',XRP:'ripple',SOL:'solana',SHIB:'shiba-inu',KISHU:'kishu-inu',WKC:'wiki-cat',CREPE:'crepe-2'};
  const quoteResponse=Object.fromEntries(oldSnapshots.ranges['1D'].data.map(([id,d])=>[cg[id],{usd:d.points.at(-1).p*1.01,last_updated_at:Math.floor(Date.now()/1000)}]));
  const cachedQuotes=Object.fromEntries(Object.entries(quoteResponse).map(([id,q])=>[id,{...q,usd:q.usd*1.02}]));
  function quotePayload(mode,cached=false){
   const values=structuredClone(cached?cachedQuotes:quoteResponse);
   if(mode==='stale')for(const q of Object.values(values))q.last_updated_at=Math.floor(aged/1000);
   if(mode==='missing')delete values['crepe-2'];
+  if(mode==='missing-shib')delete values['shiba-inu'];
   if(mode==='selected-only')return {bitcoin:values.bitcoin};
+  if(mode==='shib-only')return {'shiba-inu':values['shiba-inu']};
   return values;
  }
  async function fulfilHistory(route){
@@ -87,24 +107,24 @@ const assert=require('node:assert/strict');
    await route.abort();
   });
   await page.goto('https://tracker.test/'+(settings.selected.length?'?coins='+settings.selected.join(','):''));
-  await page.locator('[data-series="BTC"]').waitFor();
+  await page.locator('[data-series="'+(settings.selected[0]||'BTC')+'"]').waitFor();
   return {page,settings,calls,nextHistory};
  }
  async function waitForRefresh(page){await page.waitForFunction(()=>window.WealthTransferCryptoTracker.getState().busy===false);assert(await page.locator('#refresh').isEnabled());}
  const {page:refreshPage,settings,calls}=await openRefreshPage();
  await refreshPage.locator('#refresh').click();assert(await refreshPage.locator('#refresh').isDisabled());await waitForRefresh(refreshPage);
  await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert.equal(calls.quote,1);
- const freshState=await refreshPage.evaluate(()=>window.WealthTransferCryptoTracker.getState());assert(Date.now()-freshState.end<300000);assert.equal(freshState.series.length,8);assert(freshState.series.every(x=>x.last.p>0));assert((await refreshPage.locator('#warning').innerText()).includes('history'));
- settings.primary='failed';await refreshPage.locator('#refresh').click();await waitForRefresh(refreshPage);await refreshPage.getByText(/Current quotes could not be checked/).waitFor();assert.equal(calls.quote,2);assert.equal(await refreshPage.locator('[data-series]').count(),8);
+ const freshState=await refreshPage.evaluate(()=>window.WealthTransferCryptoTracker.getState());assert(Date.now()-freshState.end<300000);assert.equal(freshState.series.length,CHART_COINS.length);assert(freshState.series.every(x=>x.last.p>0));assert.equal(freshState.series.find(x=>x.id==='SHIB').last.p,quoteResponse['shiba-inu'].usd,'SHIB receives a fresh quote with the full comparison');assert((await refreshPage.locator('#warning').innerText()).includes('history'));
+ settings.primary='failed';await refreshPage.locator('#refresh').click();await waitForRefresh(refreshPage);await refreshPage.getByText(/Current quotes could not be checked/).waitFor();assert.equal(calls.quote,2);assert.equal(await refreshPage.locator('[data-series]').count(),CHART_COINS.length);
  settings.primary='fresh';await refreshPage.locator('#refresh').click();await waitForRefresh(refreshPage);await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert.equal(calls.quote,3);assert(!/15 seconds|allow 15/i.test(await refreshPage.locator('body').innerText()));
- settings.history='fresh';await refreshPage.locator('#refresh').click();await waitForRefresh(refreshPage);await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert(calls.history>=8);assert(await refreshPage.locator('#warning').isHidden(),'Repaired history should clear warning');
+ settings.history='fresh';await refreshPage.locator('#refresh').click();await waitForRefresh(refreshPage);await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert(calls.history>=CHART_COINS.length);assert(await refreshPage.locator('#warning').isHidden(),'Repaired history should clear warning');
  await refreshPage.locator('#wtct-timezone').selectOption('America/New_York');await refreshPage.reload();assert.equal(await refreshPage.locator('#wtct-timezone').inputValue(),'America/New_York');assert((await refreshPage.locator('#dates').innerText()).includes('Eastern Time'));await refreshPage.close();
  // HTTP 200 is insufficient: stale or incomplete selected prices must use the verified fallback.
- for(const primary of ['stale','missing']){
+ for(const primary of ['stale','missing','missing-shib']){
   const test=await openRefreshPage({primary,cache:'fresh'});
   await test.page.locator('#refresh').click();await waitForRefresh(test.page);await test.page.getByText(/^Quotes updated ·/).waitFor();
   const current=await test.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
-  assert.equal(test.calls.quote,1);assert.equal(test.calls.cache,1);assert.equal(current.series.length,8);
+  assert.equal(test.calls.quote,1);assert.equal(test.calls.cache,1);assert.equal(current.series.length,CHART_COINS.length);
   assert.equal(current.series.find(x=>x.id==='BTC').last.p,cachedQuotes.bitcoin.usd,'Fresh fallback quote must replace invalid primary values');
   assert.equal(current.errors.length,0);await test.page.close();
  }
@@ -114,18 +134,26 @@ const assert=require('node:assert/strict');
  await stale.page.locator('#refresh').click();await waitForRefresh(stale.page);await stale.page.getByText(/Current quotes could not be checked/).waitFor();
  const afterStale=await stale.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
  assert.equal(stale.calls.quote,1);assert.equal(stale.calls.cache,1);assert.equal(afterStale.end,beforeStale.end);assert.deepEqual(afterStale.series,beforeStale.series);assert(afterStale.errors.length>0);
- stale.settings.primary='fresh';await stale.page.locator('#refresh').click();await waitForRefresh(stale.page);await stale.page.getByText(/^Quotes updated ·/).waitFor();assert.equal(stale.calls.quote,2);assert.equal(await stale.page.locator('[data-series]').count(),8);await stale.page.close();
- // A one-coin selection must not require quotes for the seven unselected coins.
+ stale.settings.primary='fresh';await stale.page.locator('#refresh').click();await waitForRefresh(stale.page);await stale.page.getByText(/^Quotes updated ·/).waitFor();assert.equal(stale.calls.quote,2);assert.equal(await stale.page.locator('[data-series]').count(),CHART_COINS.length);await stale.page.close();
+ // A one-coin selection must not require quotes for the eight unselected coins.
  const selected=await openRefreshPage({primary:'stale',cache:'selected-only',selected:['BTC']});
  await selected.page.locator('#refresh').click();await waitForRefresh(selected.page);await selected.page.getByText(/^Quotes updated ·/).waitFor();
  const selectedState=await selected.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
  assert.deepEqual(selected.calls.requestedCoins,['bitcoin']);assert.equal(selected.calls.cache,1);assert.deepEqual(selectedState.series.map(x=>x.id),['BTC']);assert.equal(selectedState.series[0].last.p,cachedQuotes.bitcoin.usd);await selected.page.close();
+ // SHIB-only refresh uses its exact provider identity and does not require the other eight quotes.
+ const shibOnly=await openRefreshPage({primary:'stale',cache:'shib-only',selected:['SHIB']});
+ await shibOnly.page.locator('#refresh').click();await waitForRefresh(shibOnly.page);await shibOnly.page.getByText(/^Quotes updated ·/).waitFor();
+ const shibState=await shibOnly.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
+ assert.deepEqual(shibOnly.calls.requestedCoins,['shiba-inu']);assert.equal(shibOnly.calls.cache,1);assert.deepEqual(shibState.series.map(x=>x.id),['SHIB']);assert.equal(shibState.series[0].last.p,cachedQuotes['shiba-inu'].usd);await shibOnly.page.close();
  // A recently written local cache still shows its oldest selected quote's actual age.
- const stored=structuredClone(oldSnapshots.ranges['1D']),cacheNow=Date.now(),shift=cacheNow-45*60000-stored.spec.end;
+ const stored=structuredClone(oldSnapshots.ranges['1D']),cacheNow=Date.now(),staleAt=cacheNow-45*60000,shift=staleAt-stored.spec.end;
  stored.savedAt=cacheNow;stored.spec.quoteCheckedAt=cacheNow;stored.spec.start+=shift;stored.spec.end=cacheNow;
  for(const [id,d]of stored.data){
   for(const point of d.points)point.t+=shift;
-  if(id!=='BTC'){const last=d.points.at(-1);d.points.push({...last,t:cacheNow,gapBefore:true});d.gaps++;}
+  // Provider series can end at different times. Pin the intended fixture age
+  // independently of the prepared snapshot's newest series.
+  const last=d.points.at(-1),target=id==='BTC'?staleAt:cacheNow;
+  if(last.t<target){const gapBefore=target-last.t>stored.spec.step*1.5;d.points.push({...last,t:target,gapBefore});if(gapBefore)d.gaps++;}
  }
  const local=await openRefreshPage({stored});
  await local.page.getByText(/^Older quotes ·/).waitFor();assert.equal(local.calls.quote,0);assert.equal((await local.page.evaluate(()=>window.WealthTransferCryptoTracker.getState())).end,cacheNow);assert(await local.page.locator('#warning').isVisible());
@@ -135,15 +163,15 @@ const assert=require('node:assert/strict');
  await limited.page.locator('#refresh').click();await waitForRefresh(limited.page);await limited.page.getByText(/^Quotes updated ·/).waitFor();
  assert.equal(limited.calls.events[0],'quotes','Current quotes must be requested before old history');assert(limited.calls.history>0);assert.equal(limited.calls.quote,1);assert.equal(limited.calls.cache,0);
  const limitedState=await limited.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
- assert.equal(limitedState.series.length,8);assert(limitedState.series.every(x=>Date.now()-x.last.t<300000));assert((await limited.page.locator('#warning').innerText()).includes('history'));assert(!/Current quotes could not be checked/.test(await limited.page.locator('#warning').innerText()));await limited.page.close();
+ assert.equal(limitedState.series.length,CHART_COINS.length);assert(limitedState.series.every(x=>Date.now()-x.last.t<300000));assert((await limited.page.locator('#warning').innerText()).includes('history'));assert(!/Current quotes could not be checked/.test(await limited.page.locator('#warning').innerText()));await limited.page.close();
  // The history deadline covers the whole repair, not a new 15 seconds for each coin.
  const slow=await openRefreshPage({history:'controlled',clock:true}),firstHistory=slow.nextHistory();
  await slow.page.locator('#refresh').click();const firstRoute=await firstHistory;
  await slow.page.getByText(/^Quotes updated ·/).waitFor();assert((await slow.page.evaluate(()=>window.WealthTransferCryptoTracker.getState())).busy);
  await slow.page.clock.fastForward(10000);const secondHistory=slow.nextHistory();await fulfilHistory(firstRoute);const secondRoute=await secondHistory;
  await slow.page.clock.fastForward(6000);await waitForRefresh(slow.page);await slow.page.getByText(/^Quotes updated ·/).waitFor();
- assert.equal(slow.calls.quote,1);assert.equal(slow.calls.history,2);assert.equal(await slow.page.locator('[data-series]').count(),8);assert((await slow.page.locator('#warning').innerText()).includes('history'));
+ assert.equal(slow.calls.quote,1);assert.equal(slow.calls.history,2);assert.equal(await slow.page.locator('[data-series]').count(),CHART_COINS.length);assert((await slow.page.locator('#warning').innerText()).includes('history'));
  await secondRoute.abort().catch(()=>{});await slow.page.close();
- console.log('PASS: history repair, persisted Eastern Time, current-quote refresh, in-flight button guard, stale/missing HTTP-200 fallback, stale-source rejection, selected-coin validation, actual cached-quote age, quotes before rate-limited history, shared history deadline and immediate retry.');
- await browser.close();console.log('PASS: immediate offline chart, single snapshot request, all periods, rapid selections, Price-button switching and comparison restoration, tiny prices, mobile widths and isolated Jon George panel.');
+ console.log('PASS: history repair, persisted Eastern Time, current-quote refresh, in-flight button guard, stale/missing HTTP-200 fallback, stale-source rejection, selected-coin and SHIB-only validation, actual cached-quote age, quotes before rate-limited history, shared history deadline and immediate retry.');
+ await browser.close();console.log('PASS: immediate offline chart, single snapshot request, all nine coins across prepared periods, SHIB price and comparison restoration, rapid selections, Price-button switching and comparison restoration, tiny prices, mobile widths and isolated Jon George panel.');
 })().catch(e=>{console.error(e);process.exit(1);});

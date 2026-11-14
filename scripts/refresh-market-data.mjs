@@ -1,5 +1,5 @@
 import {mkdir,writeFile,readFile} from 'node:fs/promises';
-const coins={BTC:'bitcoin',ETH:'ethereum',BNB:'binancecoin',XRP:'ripple',SOL:'solana',KISHU:'kishu-inu',WKC:'wiki-cat',CREPE:'crepe-2'};
+const coins={BTC:'bitcoin',ETH:'ethereum',BNB:'binancecoin',XRP:'ripple',SOL:'solana',SHIB:'shiba-inu',KISHU:'kishu-inu',WKC:'wiki-cat',CREPE:'crepe-2'};
 await mkdir('data',{recursive:true});
 try{const manifest=JSON.parse(await readFile('data/manifest.json','utf8'));if(Date.now()-manifest.updatedAt<(process.env.REUSE_MARKET_DATA==='true'?1800000:900000)&&manifest.updatedAt<=Date.now()+300000){for(const symbol of Object.keys(coins)){const item=JSON.parse(await readFile('data/'+symbol+'.json','utf8'));if(item.id!==coins[symbol]||!Array.isArray(item.prices?.[31]))throw Error('Incomplete cache');}console.log('Reusing verified snapshot for this deployment.');process.exit(0);}}catch{}
 let lastRequest=0;const outputs=[];
