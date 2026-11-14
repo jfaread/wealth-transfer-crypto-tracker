@@ -1,0 +1,28 @@
+const aggregateHistories=new Map();
+async function fetchAggregate(id,spec,signal,direct=false){
+ if(spec.range==='5Y')throw Error('This free aggregate source supports at most 365 days. Select a shorter period, or deselect Kishu Inu, Wiki Cat and CREPE for Binance five-year history.');
+ const key=['1D','5D','1M'].includes(spec.range)?31:365,cacheKey=id+':'+key,ttl=key===31?1800000:43200000;
+ function series(prices,checkedAt){
+  if(!Number.isFinite(checkedAt)||checkedAt<=0||checkedAt>Date.now()+300000||!Array.isArray(prices)||prices.length<2||prices.length>5000)throw Error('Unexpected aggregate market data.');
+  const raw=prices.map(r=>{if(!Array.isArray(r)||r.length!==2||!Number.isSafeInteger(r[0])||r[0]<=0||r[0]>Date.now()+300000||!Number.isFinite(r[1])||r[1]<=0)throw Error('Invalid aggregate observation.');return {t:r[0],p:r[1]};});
+  for(let i=1;i<raw.length;i++)if(raw[i].t<=raw[i-1].t)throw Error('Duplicate or out-of-order aggregate data.');
+  const first=raw.find(x=>x.t>=spec.start),last=raw.filter(x=>x.t<=spec.end).at(-1);
+  if(!first||first.t-spec.start>spec.step||!last||spec.end-last.t>spec.step)throw Error('History does not cover this period for '+id+'.');
+  const base=first.p,points=[{t:spec.start,p:base,r:0}];if(first.t>spec.start)points.push({...first,r:0});let gaps=0;
+  for(const x of raw){if(x.t<=first.t||x.t>spec.end)continue;const gapBefore=x.t-points.at(-1).t>spec.step*1.5;if(gapBefore)gaps++;points.push({...x,r:(x.p/base-1)*100,gapBefore});}
+  if(points.length<2)throw Error('Not enough observations.');return {id,base,points,gaps,asOf:checkedAt,historySavedAt:checkedAt,historyObservedAt:last.t};
+ }
+ const memo=aggregateHistories.get(cacheKey);
+ if(memo&&Date.now()-memo.checkedAt<ttl){try{return series(memo.prices,memo.checkedAt);}catch{aggregateHistories.delete(cacheKey);}}
+ // A newly published same-origin history is useful even during a manual repair.
+ // It is checked before asking the free provider again.
+ try{
+  const cached=await requestJSON(new URL('./data/'+id+'.json',location.href).href,signal,2000,direct?'reload':'default');
+  const checkedAt=cached.windowUpdatedAt?.[key]??cached.updatedAt;
+  if(cached.id!==CG_IDS[id]||Date.now()-checkedAt>ttl)throw Error('History cache is older');
+  const value=series(cached.prices?.[key],checkedAt);aggregateHistories.set(cacheKey,{prices:cached.prices[key],checkedAt});return value;
+ }catch(e){if(signal.aborted)throw e;}
+ const packet=await requestJSON('https://api.coingecko.com/api/v3/coins/'+CG_IDS[id]+'/market_chart?vs_currency=usd&days='+key,signal,12000);
+ const checkedAt=Date.now(),value=series(packet?.prices,checkedAt);
+ aggregateHistories.set(cacheKey,{prices:packet.prices,checkedAt});return value;
+}
