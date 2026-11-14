@@ -15,7 +15,9 @@ const SOURCE='https://www.youtube.com/feeds/videos.xml?channel_id='+CHANNEL;
    await context.addInitScript(()=>localStorage.setItem('wtct:v3:auto','false'));
    await context.route('**/*',async route=>{
     const u=new URL(route.request().url());
-    if(u.href===SITE)return route.fulfill({contentType:'text/html',body:html});
+    // The chart preserves its selection in the URL. Serve the same document
+    // when reloading that legitimate query, just as GitHub Pages does.
+    if(u.origin===new URL(SITE).origin&&[new URL(SITE).pathname,new URL(SITE).pathname+'index.html'].includes(u.pathname))return route.fulfill({contentType:'text/html',body:html});
     if(u.origin===new URL(SITE).origin&&u.pathname.startsWith(new URL(SITE).pathname)){
      const path=u.pathname.slice(new URL(SITE).pathname.length);
      if(path==='alerts-config.json')return route.fulfill({contentType:'application/json',body:'{"version":1,"apiBase":null}'});

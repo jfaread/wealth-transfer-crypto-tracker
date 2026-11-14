@@ -2,7 +2,7 @@ name: Restore creator updates and clarify test notifications
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/repair-news-notification.yml']
+    paths: ['.github/workflows/repair-news-notification.yml', '.maintenance/**']
 permissions:
   contents: write
   pages: write
