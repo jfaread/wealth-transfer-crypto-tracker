@@ -17,6 +17,12 @@ targets:
       - path: CryptoWatchSoundCompanion
       - path: Resources
         buildPhase: resources
+    # Signing remains unconfigured; the owner must provide a valid Apple team.
+    # Enable the capability without generating or committing any credentials.
+    attributes:
+      SystemCapabilities:
+        com.apple.Push:
+          enabled: 1
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jfaread.cryptowatch.sound

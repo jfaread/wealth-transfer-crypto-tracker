@@ -64,6 +64,7 @@ final class SoundCompanionModel: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var model = SoundCompanionModel()
+    @StateObject private var native = NativePairingModel()
     private let website = URL(string: "https://jfaread.github.io/wealth-transfer-crypto-tracker/")!
 
     var body: some View {
@@ -86,15 +87,50 @@ struct ContentView: View {
                     .padding()
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
                     Button("Enable iPhone notifications") {
-                        Task { await model.requestPermission() }
+                        Task {
+                            await model.requestPermission()
+                            if model.authorised { native.registerWithApple() }
+                        }
                     }.buttonStyle(.borderedProminent)
                     Button("Test locked-screen sound") {
                         Task { await model.scheduleSoundTest() }
                     }.buttonStyle(.bordered)
                     Text(model.status).font(.callout)
+                    Divider()
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Secure native pairing", systemImage: "iphone.gen3.radiowaves.left.and.right")
+                            .font(.headline)
+                        Text("Pair this iPhone with an existing connected Crypto-Watch web alert device. The website will issue a one-use code valid for five minutes. Pairing is disabled until the native backend is deployed.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        SecureField("Paste the one-time pairing code", text: $native.pairingCode)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .textContentType(.oneTimeCode)
+                            .textFieldStyle(.roundedBorder)
+                            .privacySensitive()
+                        Button("Pair this iPhone") {
+                            Task { await native.pair() }
+                        }
+                        .disabled(!native.hasAPNsToken || native.isBusy || native.pairingCode.isEmpty || native.isConnected)
+                        .buttonStyle(.borderedProminent)
+                        if native.isConnected {
+                            Button("Disconnect native alerts") {
+                                Task { await native.disconnect() }
+                            }
+                            .disabled(native.isBusy)
+                            .buttonStyle(.bordered)
+                        }
+                        Text(native.status).font(.footnote)
+                        Text("Your existing website alerts, thresholds and Web Push registration remain separate.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding()
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
                     Link("Open Crypto-Watch", destination: website).font(.headline)
                     Divider()
-                    Text("Remote XRP notifications are not connected. This preview tests iOS sound playback only. Real background price alerts require Apple signing, APNs credentials and a secure native-device registration service.")
+                    Text("Remote XRP notifications are not yet operational. The signed app, APNs credentials and secure registration backend must all be enabled before this companion can sound while closed. The local sound test does not mean a price notification was delivered.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -103,5 +139,13 @@ struct ContentView: View {
             .navigationTitle("Crypto-Watch")
         }
         .task { await model.checkPermission() }
+        .onReceive(NotificationCenter.default.publisher(for: .cryptoWatchAPNSTokenReceived)) { notification in
+            if let token = notification.userInfo?["deviceToken"] as? Data {
+                native.receivedToken(token)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cryptoWatchAPNSTokenUnavailable)) { _ in
+            native.tokenUnavailable()
+        }
     }
 }

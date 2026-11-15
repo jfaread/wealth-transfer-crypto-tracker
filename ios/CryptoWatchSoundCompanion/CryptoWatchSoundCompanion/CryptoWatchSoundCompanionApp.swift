@@ -32,8 +32,13 @@ final class AlertAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
 
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        // No token is logged or uploaded. Secure registration is not deployed.
-        NotificationCenter.default.post(name: .cryptoWatchAPNSTokenReceived, object: nil)
+        // Pass the opaque token only to the app's opt-in pairing flow.
+        // Never log it or save it to UserDefaults.
+        NotificationCenter.default.post(
+            name: .cryptoWatchAPNSTokenReceived,
+            object: nil,
+            userInfo: ["deviceToken": deviceToken]
+        )
     }
 
     func application(_ application: UIApplication,
