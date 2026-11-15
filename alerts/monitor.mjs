@@ -832,11 +832,19 @@ export class CryptoAlertMonitor {
             await this.ctx.storage.transaction(async tx => {
               await tx.put(`device:${id}`, device);
               for (const job of jobs) await tx.put(`outbox:${job.eventId}`, job);
-              if (nativeJobs.length) await this.nativeOutbox.saveInTransaction(tx,nativeJobs);
             });
             this.devices.set(id, device);
             for (const job of jobs) this.pending.set(job.eventId, job);
-            if (nativeJobs.length) nativeQueued = true;
+            // Native APNs storage must never make the existing Web Push
+            // transaction fail. A native queue failure loses only that optional
+            // sound, not the original alert.
+            if (nativeJobs.length) {
+              try {
+                await this.ctx.storage.transaction(async tx =>
+                  this.nativeOutbox.saveInTransaction(tx,nativeJobs));
+                nativeQueued = true;
+              } catch {}
+            }
           }
           this.states.set(id, states);
         }
