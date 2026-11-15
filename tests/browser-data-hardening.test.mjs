@@ -24,8 +24,8 @@ test('older fallback observations cannot replace valid newer primary prices',asy
  const get=quoteEnv(async url=>url.includes('simple/price')?{bitcoin:q(10)}:{version:1,quotes:{bitcoin:q(5,now-60000),ethereum:q(20)}});
  const result=await get(['BTC','ETH'],new AbortController().signal);assert.equal(result.quotes.get('BTC').p,10);
 });
-test('a complete primary response avoids an unnecessary fallback request',async()=>{
- let count=0;const result=await quoteEnv(async()=>{count++;return {bitcoin:q(10)};})(['BTC'],new AbortController().signal);assert.equal(count,1);assert.equal(result.quotes.get('BTC').p,10);assert.equal(result.failureMessage,null);
+test('a complete verified published response avoids an unnecessary provider request',async()=>{
+ let count=0;const result=await quoteEnv(async()=>{count++;return {version:1,quotes:{bitcoin:q(10)}};})(['BTC'],new AbortController().signal);assert.equal(count,1);assert.equal(result.quotes.get('BTC').p,10);assert.equal(result.failureMessage,null);
 });
 test('a failed check retains the exact two-minute-old XRP observation without claiming an update',async()=>{
  const saved=retainedBundle();let calls=0;
@@ -41,8 +41,8 @@ test('partial primary, partial published cache and validated local quotes comple
 });
 test('a newer local observation cannot be rolled back by a complete but older remote response',async()=>{
  const saved=retainedBundle({XRP:[1.25,now-5000]});let calls=0;
- const result=await quoteEnv(async()=>{calls++;return {ripple:q(1,now-10000)};})(['XRP'],new AbortController().signal,[saved]);
- assert.equal(calls,1);assert.equal(result.quotes.get('XRP').p,1.25);assert.equal(result.quotes.get('XRP').t,now-5000);
+ const result=await quoteEnv(async url=>{calls++;return url.includes('simple/price')?{ripple:q(1,now-10000)}:{version:1,quotes:{}};})(['XRP'],new AbortController().signal,[saved]);
+ assert.equal(calls,2);assert.equal(result.quotes.get('XRP').p,1.25);assert.equal(result.quotes.get('XRP').t,now-5000);
 });
 test('local recovery rejects stale, future, non-CoinGecko and malformed observations',async t=>{
  const invalidReturn=retainedBundle();invalidReturn.data[0][1].points.at(-1).r=10;
@@ -117,11 +117,11 @@ test('a newer savedAt cannot roll back even one selected coin observation',()=>{
 
 test('successful XRP response must not be called a failed check just because local data is newer',async()=>{
   const saved=retainedBundle({XRP:[1.25,now-5000]});let calls=0;
-  const result=await quoteEnv(async()=>{calls++;return {ripple:q(1.24,now-15000)};})(['XRP'],new AbortController().signal,[saved]);
+  const result=await quoteEnv(async url=>{calls++;return url.includes('simple/price')?{ripple:q(1.24,now-15000)}:{version:1,quotes:{}};})(['XRP'],new AbortController().signal,[saved]);
   assert.deepEqual(Array.from(result.retainedIds),[],'A valid provider reply is not a failed check');
   assert.deepEqual(Array.from(result.preservedIds),['XRP']);
   assert.equal(result.quotes.get('XRP').t,now-5000);assert.equal(result.quotes.get('XRP').p,1.25);
-  assert.equal(result.failureMessage,null);assert.equal(calls,1);
+  assert.equal(result.failureMessage,null);assert.equal(calls,2);
 });
 test('confirmed older XRP and unavailable ETH have independent check outcomes',async()=>{
   const saved=retainedBundle({XRP:[1.25,now-5000],ETH:[20,now-5000]});
