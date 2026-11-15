@@ -100,6 +100,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
     const mode=settings.primarySequence?.length?settings.primarySequence.shift():settings.primary;
     await new Promise(r=>setTimeout(r,200));
     if(mode==='network'){await route.abort();return;}
+    if(mode==='verified-older'){const last=new Map(settings.stored.data).get('XRP').points.at(-1);await route.fulfill({contentType:'application/json',body:JSON.stringify({ripple:{usd:last.p*0.99,last_updated_at:Math.floor((last.t-10000)/1000)}})});return;}
     await route.fulfill({status:mode==='failed'?503:mode==='rate-limited'?429:200,headers:mode==='rate-limited'?{'Retry-After':'120'}:{},contentType:'application/json',body:JSON.stringify(['failed','rate-limited'].includes(mode)?{}:quotePayload(mode))});return;
    }
    if(u.hostname==='api.coingecko.com'&&u.pathname.endsWith('/market_chart')){
@@ -135,6 +136,22 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
   for(const point of d.points)point.t+=recentShift;
   const last=d.points.at(-1);if(last.t<observedAt){const gapBefore=observedAt-last.t>recent.spec.step*1.5;d.points.push({t:observedAt,p:last.p,r:last.r,...(gapBefore?{gapBefore:true}:{})});if(gapBefore)d.gaps++;}
  }
+ // A successful but slightly older remote reply must not show an outage.
+ const checkedRecent=structuredClone(recent);for(const [,d]of checkedRecent.data)d.historySavedAt=Date.now();
+ const checkedXrp=await openRefreshPage({primary:'verified-older',stored:checkedRecent,selected:['XRP']});
+ const beforeChecked=await checkedXrp.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
+ await checkedXrp.page.locator('#refresh').click();await waitForRefresh(checkedXrp.page);await checkedXrp.page.getByText(/^Prices checked ·/).waitFor();
+ assert.equal(checkedXrp.calls.quote,1);assert.equal(checkedXrp.calls.cache,0);assert.equal(await checkedXrp.page.locator('#status').getAttribute('class'),'status ready');assert(await checkedXrp.page.locator('#warning').isHidden());
+ const afterChecked=await checkedXrp.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());assert.equal(afterChecked.series[0].last.p,beforeChecked.series[0].last.p);assert.equal(afterChecked.series[0].last.t,beforeChecked.series[0].last.t);
+ // The return is relative to the newly rolled window, not the old baseline.
+ const checkedSaved=await checkedXrp.page.evaluate(()=>JSON.parse(localStorage.getItem('wtct:v3:range:1D')));
+ const checkedSeries=new Map(checkedSaved.data).get('XRP');
+ assert(Math.abs(afterChecked.series[0].last.r-(afterChecked.series[0].last.p/checkedSeries.base-1)*100)<1e-9);
+ assert.deepEqual(checkedSaved.spec.quoteRefresh.retainedIds,[]);assert.deepEqual(checkedSaved.spec.quoteRefresh.preservedIds,['XRP']);
+ await checkedXrp.page.locator('#wtct-timezone').selectOption('America/New_York');await checkedXrp.page.reload();await checkedXrp.page.getByText(/^Prices checked ·.*Eastern Time/).waitFor();assert(await checkedXrp.page.locator('#warning').isHidden());
+ checkedXrp.settings.primary='network';await checkedXrp.page.locator('#refresh').click();await waitForRefresh(checkedXrp.page);await checkedXrp.page.getByText(/^Saved quotes ·/).waitFor();assert.match(await checkedXrp.page.locator('#warning').innerText(),/Could not check for newer prices for XRP/);
+ await fs.mkdir('qa',{recursive:true});await checkedXrp.page.screenshot({path:'qa/xrp-real-outage-retained.png',fullPage:true});await checkedXrp.page.close();
+ console.log('PASS: successful older XRP reply is not a failure; exact latest price survives reload and Eastern Time; genuine later outage is still labelled.');
  const xrp=await openRefreshPage({primary:'network',stored:recent,selected:['XRP']});
  await xrp.page.getByRole('button',{name:/^Price ·/}).click();const beforeXrp=await xrp.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
  await xrp.page.locator('#refresh').click();await waitForRefresh(xrp.page);await xrp.page.getByText(/^Saved quotes ·/).waitFor();

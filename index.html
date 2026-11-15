@@ -171,6 +171,7 @@ function validBundle(b){
    if(!validIds(r.retainedIds)||!validIds(r.failedIds)||r.retainedIds.some(id=>r.failedIds.includes(id))||(r.failureMessage!==null&&(typeof r.failureMessage!=='string'||r.failureMessage.length>300)))return false;
    if(r.state==='updated'&&(r.retainedIds.length||r.failedIds.length)||r.state==='saved'&&(!r.retainedIds.length||r.failedIds.length)||r.state==='failed'&&!r.failedIds.length)return false;
    if(r.state!=='failed'&&r.phase!=='quotes')return false;
+   if(r.preservedIds!==undefined&&(!validIds(r.preservedIds)||r.preservedIds.some(id=>r.retainedIds.includes(id)||r.failedIds.includes(id))))return false;
   }
   return true;
  }catch(_){return false;}
@@ -314,7 +315,8 @@ function showSnapshotStatus(bundle){
   $('warning').hidden=false;$('warning').textContent=chartFailure?'This chart could not be updated. '+(report.failureMessage||'Choose another period or try Refresh prices.')+' The last verified chart is still available.':'Could not check for newer prices for '+failed.join(', ')+'. The last verified chart is still available.'+(fresh?'':' These saved observations are no longer current.')+' Refresh prices to try again.';return;
  }
  if(bundle.spec.quoteCheckedAt||retained.length){
-  setStatus(fresh?'ready':'failed',(fresh?'Quotes updated':'Older quotes')+' · '+dateText(observedAt??bundle.spec.end)+' '+zoneLabel());
+  const preserved=state.coins.some(id=>Array.isArray(report?.preservedIds)&&report.preservedIds.includes(id));
+  setStatus(fresh?'ready':'failed',(fresh?(preserved?'Prices checked':'Quotes updated'):'Older quotes')+' · '+dateText(observedAt??bundle.spec.end)+' '+zoneLabel());
   if(!fresh){$('warning').hidden=false;$('warning').textContent='These saved quotes are no longer current. Refresh prices checks for quotes from the last 30 minutes.';return;}
   if(retained.length){setStatus('failed','Saved quotes · '+dateText(observedAt)+' '+zoneLabel());$('warning').hidden=false;$('warning').textContent='Could not check for newer prices for '+retained.join(', ')+'. Showing the latest verified saved observations, dated above. Refresh prices to try again.';return;}
   const delayed=state.coins.filter(id=>now-(available.get(id)?.historySavedAt||bundle.spec.historySavedAt)>7200000);const old=delayed.length>0;$('warning').hidden=!old;$('warning').textContent=old?'Current prices updated. Chart history is delayed for '+delayed.join(', ')+'. Successful history repairs are kept; missing observations remain gaps. Refresh prices retries the remaining history.':'';return;
@@ -382,19 +384,23 @@ async function fetchCurrentQuotes(wanted,signal,retainedBundles=[]){
   try{merge(await requestJSON(url,signal,8000));}catch(e){if(signal.aborted)throw e;primaryError=e;}
  }
  if(signal.aborted)throw new DOMException('Cancelled','AbortError');
- const retained=new Set();
+ // Separate a successful check from the timestamp chosen for display.
+ // A provider's cached reply may be older than an already verified local
+ // observation. Keep that observation without inventing a failed check.
+ const received=new Set(wanted.filter(id=>{const value=combined.get(id);return value&&validQuoteObservation(value.p,value.t);}));
+ const retained=new Set(),preserved=new Set();
  // Only already validated aggregate USD observations may fill missing coins or
  // protect a newer local observation. Preserve their original millisecond clock.
  for(const bundle of retainedBundles){
   if(!validBundle(bundle)||!['CoinGecko live','CoinGecko'].includes(bundle.spec.source)||bundle.spec.currency!=='USD')continue;
   for(const [id,d]of bundle.data){if(!wanted.includes(id))continue;const last=d.points.at(-1);if(!validQuoteObservation(last.p,last.t))continue;
-   if(!combined.has(id)||last.t>combined.get(id).t){combined.set(id,{t:last.t,p:last.p});retained.add(id);}
+   if(!combined.has(id)||last.t>combined.get(id).t){combined.set(id,{t:last.t,p:last.p});if(received.has(id))preserved.add(id);else retained.add(id);}
   }
  }
  const unavailable=missing();
  if(unavailable.length)throw Error('Fresh quotes unavailable for '+unavailable.join(', ')+'. '+(primaryError?.message||'The last verified chart is retained.'));
  const retainedIds=wanted.filter(id=>retained.has(id));
- return {quotes:new Map(wanted.map(id=>[id,combined.get(id)])),retainedIds,attemptedAt:Date.now(),failureMessage:retainedIds.length?(primaryError?.message||'The source did not return newer verified observations.'):null};
+ return {quotes:new Map(wanted.map(id=>[id,combined.get(id)])),retainedIds,preservedIds:wanted.filter(id=>preserved.has(id)),attemptedAt:Date.now(),failureMessage:retainedIds.length?(primaryError?.message||'The source did not return newer verified observations.'):null};
 }
 function applyCurrentQuotes(bundle,quotes,refresh){
  const now=Date.now();
@@ -408,7 +414,7 @@ function applyCurrentQuotes(bundle,quotes,refresh){
   data.push([id,{id,base,points,gaps,asOf:now,historySavedAt:d.historySavedAt||bundle.spec.historySavedAt||bundle.savedAt,historyObservedAt:d.historyObservedAt}]);
  }
  const retainedIds=refresh?.retainedIds||[],retrieved=[...quotes.keys()].some(id=>!retainedIds.includes(id));
- const quoteRefresh={state:retainedIds.length?'saved':'updated',phase:'quotes',retainedIds:retainedIds.slice(),failedIds:[],attemptedAt:refresh?.attemptedAt||now,failureMessage:refresh?.failureMessage?String(refresh.failureMessage).slice(0,300):null};
+ const quoteRefresh={state:retainedIds.length?'saved':'updated',phase:'quotes',retainedIds:retainedIds.slice(),failedIds:[],preservedIds:(refresh?.preservedIds||[]).slice(),attemptedAt:refresh?.attemptedAt||now,failureMessage:refresh?.failureMessage?String(refresh.failureMessage).slice(0,300):null};
  const next={spec:{...bundle.spec,start,end,quoteCheckedAt:retrieved?quoteRefresh.attemptedAt:bundle.spec.quoteCheckedAt,quoteRefresh,historySavedAt:bundle.spec.historySavedAt||bundle.savedAt,saved:false},data,savedAt:retrieved?now:bundle.savedAt};
  if(!validBundle(next))throw Error('The refreshed quotes did not pass the chart data checks.');
  bundles.set(range,next);storageWrite('range:'+range,next);return next;

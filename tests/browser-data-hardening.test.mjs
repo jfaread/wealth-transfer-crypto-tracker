@@ -114,3 +114,41 @@ test('a newer savedAt cannot roll back even one selected coin observation',()=>{
  const unresolved=b(10,100,100);unresolved.spec.quoteRefresh={state:'failed',retainedIds:['ETH'],failedIds:['BTC']};
  assert.equal(context.prefer(b(20,100,100),unresolved),false,'A new file-write timestamp must not clear the last failed check');assert.equal(context.prefer(b(20,101,100),unresolved),false,'Every unresolved selected coin needs a newer observation');assert.equal(context.prefer(b(20,101,101),unresolved),true);
 });
+
+test('successful XRP response must not be called a failed check just because local data is newer',async()=>{
+  const saved=retainedBundle({XRP:[1.25,now-5000]});let calls=0;
+  const result=await quoteEnv(async()=>{calls++;return {ripple:q(1.24,now-15000)};})(['XRP'],new AbortController().signal,[saved]);
+  assert.deepEqual(Array.from(result.retainedIds),[],'A valid provider reply is not a failed check');
+  assert.deepEqual(Array.from(result.preservedIds),['XRP']);
+  assert.equal(result.quotes.get('XRP').t,now-5000);assert.equal(result.quotes.get('XRP').p,1.25);
+  assert.equal(result.failureMessage,null);assert.equal(calls,1);
+});
+test('confirmed older XRP and unavailable ETH have independent check outcomes',async()=>{
+  const saved=retainedBundle({XRP:[1.25,now-5000],ETH:[20,now-5000]});
+  const get=quoteEnv(async url=>url.includes('simple/price')?{ripple:q(1.24,now-15000)}:{version:1,quotes:{}});
+  const result=await get(['XRP','ETH'],new AbortController().signal,[saved]);
+  assert.deepEqual(Array.from(result.retainedIds),['ETH']);assert.deepEqual(Array.from(result.preservedIds),['XRP']);
+  assert.equal(result.quotes.get('XRP').t,now-5000);assert.equal(result.quotes.get('ETH').t,now-5000);
+});
+test('two local bundles do not turn an actual outage into a successful check',async()=>{
+  const get=quoteEnv(async()=>{throw Error('Provider unavailable');});
+  const result=await get(['XRP'],new AbortController().signal,[retainedBundle(),retainedBundle({XRP:[1.3,now-5000]})]);
+  assert.deepEqual(Array.from(result.retainedIds),['XRP']);assert.deepEqual(Array.from(result.preservedIds),[]);
+  assert.equal(result.quotes.get('XRP').t,now-5000);assert.match(result.failureMessage,/unavailable/);
+});
+test('preserved observation metadata is bounded, disjoint and backwards compatible',()=>{
+  const get=quoteEnv(async()=>{}),base=retainedBundle();
+  const report={state:'updated',phase:'quotes',retainedIds:[],failedIds:[],preservedIds:['XRP'],attemptedAt:now,failureMessage:null};
+  assert.equal(get.validBundle({...base,spec:{...base.spec,quoteRefresh:report}}),true);
+  for(const value of [null,'XRP',['BTC'],['XRP','XRP']])assert.equal(get.validBundle({...base,spec:{...base.spec,quoteRefresh:{...report,preservedIds:value}}}),false);
+  assert.equal(get.validBundle({...base,spec:{...base.spec,quoteRefresh:{...report,state:'saved',retainedIds:['XRP']}}}),false);
+});
+test('a successful check keeping newer XRP remains neutral after timezone changes and reload',()=>{
+  const warning={},statuses=[],state={coins:['XRP']};let zone='UK';
+  const context=vm.createContext({Date:Clock,Map,state,$:()=>warning,setStatus:(type,text)=>statuses.push({type,text}),dateText:t=>String(t),zoneLabel:()=>zone});
+  vm.runInContext(part('function showSnapshotStatus','async function repairChartHistory')+'\nglobalThis.show=showSnapshotStatus;',context);
+  const bundle=retainedBundle({XRP:[1.25,now-5000]});bundle.data[0][1].historySavedAt=now;
+  bundle.spec.quoteRefresh={state:'updated',phase:'quotes',retainedIds:[],failedIds:[],preservedIds:['XRP'],attemptedAt:now,failureMessage:null};
+  context.show(bundle);assert.equal(statuses.at(-1).type,'ready');assert.match(statuses.at(-1).text,/^Prices checked/);assert.equal(warning.hidden,true);
+  zone='Eastern Time';context.show(JSON.parse(JSON.stringify(bundle)));assert.match(statuses.at(-1).text,/^Prices checked.*Eastern Time/);assert.equal(warning.hidden,true);
+});
