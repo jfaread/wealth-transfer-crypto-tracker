@@ -179,15 +179,15 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  const shortHistory=structuredClone(oldSnapshots.ranges['1D']);shortHistory.savedAt=Date.now();shortHistory.spec.start=shortHistory.spec.end-2*3600000;
  for(const [,d]of shortHistory.data){const p=d.points.at(-1).p,middle=p*1.01;d.base=p;d.points=[{t:shortHistory.spec.start,p,r:0},{t:shortHistory.spec.start+3600000,p:middle,r:(middle/p-1)*100},{t:shortHistory.spec.end,p,r:0}];d.gaps=0;}
  const application=await openRefreshPage({stored:shortHistory,selected:['XRP']});
- await application.page.locator('#refresh').click();await waitForRefresh(application.page);assert.equal(application.calls.quote,1);assert.equal(application.calls.cache,0);assert.match(await application.page.locator('#warning').innerText(),/saved history no longer covers this period/);assert.match(await application.page.locator('#warning').innerText(),/Choose a longer period/);
+ await application.page.locator('#refresh').click();await waitForRefresh(application.page);assert.equal(application.calls.quote,1);assert.equal(application.calls.cache,1);assert.match(await application.page.locator('#warning').innerText(),/saved history no longer covers this period/);assert.match(await application.page.locator('#warning').innerText(),/Choose a longer period/);
  await application.page.locator('#wtct-timezone').selectOption('America/New_York');assert.match(await application.page.locator('#warning').innerText(),/Choose a longer period/);await application.page.close();
  // HTTP 200 is insufficient: stale or incomplete selected prices must use the verified fallback.
  for(const primary of ['stale','missing','missing-shib']){
   const test=await openRefreshPage({primary,cache:'fresh'});
   await test.page.locator('#refresh').click();await waitForRefresh(test.page);await test.page.getByText(/^Quotes updated ·/).waitFor();
   const current=await test.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
-  assert.equal(test.calls.quote,1);assert.equal(test.calls.cache,1);assert.equal(current.series.length,CHART_COINS.length);
-  assert.equal(current.series.find(x=>x.id==='BTC').last.p,primary==='stale'?cachedQuotes.bitcoin.usd:quoteResponse.bitcoin.usd,'Keep valid primary observations while filling only missing or older entries from cache');
+  assert.equal(test.calls.quote,0);assert.equal(test.calls.cache,1);assert.equal(current.series.length,CHART_COINS.length);
+  assert.equal(current.series.find(x=>x.id==='BTC').last.p,cachedQuotes.bitcoin.usd,'A complete verified published quote set should be used without contacting the provider');
   assert.equal(current.errors.length,0);await test.page.close();
  }
  // Two stale quote sets retain the original dated chart, then allow an immediate retry.
@@ -203,12 +203,12 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  const selected=await openRefreshPage({primary:'stale',cache:'selected-only',selected:['BTC']});
  await selected.page.locator('#refresh').click();await waitForRefresh(selected.page);await selected.page.getByText(/^Quotes updated ·/).waitFor();
  const selectedState=await selected.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
- assert.deepEqual(selected.calls.requestedCoins,['bitcoin']);assert.equal(selected.calls.cache,1);assert.deepEqual(selectedState.series.map(x=>x.id),['BTC']);assert.equal(selectedState.series[0].last.p,cachedQuotes.bitcoin.usd);await selected.page.close();
+ assert.deepEqual(selected.calls.requestedCoins,[]);assert.equal(selected.calls.cache,1);assert.deepEqual(selectedState.series.map(x=>x.id),['BTC']);assert.equal(selectedState.series[0].last.p,cachedQuotes.bitcoin.usd);await selected.page.close();
  // SHIB-only refresh uses its exact provider identity and does not require the other eight quotes.
  const shibOnly=await openRefreshPage({primary:'stale',cache:'shib-only',selected:['SHIB']});
  await shibOnly.page.locator('#refresh').click();await waitForRefresh(shibOnly.page);await shibOnly.page.getByText(/^Quotes updated ·/).waitFor();
  const shibState=await shibOnly.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
- assert.deepEqual(shibOnly.calls.requestedCoins,['shiba-inu']);assert.equal(shibOnly.calls.cache,1);assert.deepEqual(shibState.series.map(x=>x.id),['SHIB']);assert.equal(shibState.series[0].last.p,cachedQuotes['shiba-inu'].usd);await shibOnly.page.close();
+ assert.deepEqual(shibOnly.calls.requestedCoins,[]);assert.equal(shibOnly.calls.cache,1);assert.deepEqual(shibState.series.map(x=>x.id),['SHIB']);assert.equal(shibState.series[0].last.p,cachedQuotes['shiba-inu'].usd);await shibOnly.page.close();
  // A recently written local cache still shows its oldest selected quote's actual age.
  const stored=structuredClone(oldSnapshots.ranges['1D']),cacheNow=Date.now(),staleAt=cacheNow-45*60000,shift=staleAt-stored.spec.end;
  stored.savedAt=cacheNow;stored.spec.quoteCheckedAt=cacheNow;stored.spec.start+=shift;stored.spec.end=cacheNow;
@@ -225,7 +225,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  // Old-history requests may be rate-limited without suppressing the current-price request or result.
  const limited=await openRefreshPage({history:'rate-limited'});
  await limited.page.locator('#refresh').click();await waitForRefresh(limited.page);await limited.page.getByText(/^Quotes updated ·/).waitFor();
- assert.equal(limited.calls.events[0],'quotes','Current quotes must be requested before old history');assert(limited.calls.history>0);assert.equal(limited.calls.quote,1);assert.equal(limited.calls.cache,0);
+ assert.equal(limited.calls.events[0],'cache','Current verified quotes must be checked before old history');assert(limited.calls.history>0);assert.equal(limited.calls.quote,1);assert.equal(limited.calls.cache,1);
  const limitedState=await limited.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
  assert.equal(limitedState.series.length,CHART_COINS.length);assert(limitedState.series.every(x=>Date.now()-x.last.t<300000));assert((await limited.page.locator('#warning').innerText()).includes('history'));assert(!/Current quotes could not be checked/.test(await limited.page.locator('#warning').innerText()));await limited.page.close();
  // A failed token cannot discard eight successful repairs, or redownload them on retry.
