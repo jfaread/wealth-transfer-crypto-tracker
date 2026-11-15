@@ -11,7 +11,7 @@ const TTL=5*60*1000, DEVICE_TTL=90*86400000, MAX_DEVICES_PER_OWNER=2;
 const textEncoder=new TextEncoder();
 const B64_TOKEN=/^[a-f0-9]{64}$/i, UUID=/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const cleanAPNs=value=> {
-  if(typeof value!=='string'||!(/^[0-9a-f]{64,256}$/i.test(value))||value.length%2)throw Error('Invalid APNs device token');
+  if(typeof value!=='string'||!(/^[0-9a-f]{32,1024}$/i.test(value))||value.length%2)throw Error('Invalid APNs device token');
   return value.toLowerCase();
 };
 const defaultCrypto=globalThis.crypto;
