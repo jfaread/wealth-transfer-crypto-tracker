@@ -141,7 +141,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  const checkedXrp=await openRefreshPage({primary:'verified-older',stored:checkedRecent,selected:['XRP']});
  const beforeChecked=await checkedXrp.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
  await checkedXrp.page.locator('#refresh').click();await waitForRefresh(checkedXrp.page);await checkedXrp.page.getByText(/^Prices checked ·/).waitFor();
- assert.equal(checkedXrp.calls.quote,1);assert.equal(checkedXrp.calls.cache,0);assert.equal(await checkedXrp.page.locator('#status').getAttribute('class'),'status ready');assert(await checkedXrp.page.locator('#warning').isHidden());
+ assert.equal(checkedXrp.calls.quote,1);assert.equal(checkedXrp.calls.cache,1);assert.equal(await checkedXrp.page.locator('#status').getAttribute('class'),'status ready');assert(await checkedXrp.page.locator('#warning').isHidden());
  const afterChecked=await checkedXrp.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());assert.equal(afterChecked.series[0].last.p,beforeChecked.series[0].last.p);assert.equal(afterChecked.series[0].last.t,beforeChecked.series[0].last.t);
  // The return is relative to the newly rolled window, not the old baseline.
  const checkedSaved=await checkedXrp.page.evaluate(()=>JSON.parse(localStorage.getItem('wtct:v3:range:1D')));
