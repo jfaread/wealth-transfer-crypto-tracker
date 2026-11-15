@@ -37,7 +37,7 @@ test('native sound is queued only for a genuine monitored XRP downward crossing'
  const event=crossing(),jobs=await outbox.prepare(OWNER,event);
  assert.equal(jobs.length,1);
  assert.match(jobs[0].id,/^[0-9a-f]{64}$/);
- assert.equal(jobs[0].event.threshold,'0.90');
+ assert.equal(jobs[0].event.threshold,'0.9','The original FCA-grade decimal evaluator canonicalises 0.90 as 0.9; APNs formats it as $0.90.');
  assert.equal(jobs[0].event.price,'0.899');
  assert.equal((await storage.list({prefix:'cw-native-outbox-v1:'})).size,0,'prepare cannot send before transaction');
  await storage.transaction(async tx=>outbox.saveInTransaction(tx,jobs));
