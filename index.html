@@ -46,6 +46,7 @@ html,body{background:#120e24}body{background:radial-gradient(ellipse at 85% 0%,#
 <main class="wrap" id="wtct-main">
 <section class="intro"><p><strong>Crypto-Watch</strong></p><div class="actions"><button id="share" class="btn primary">Share on WhatsApp ↗</button><button id="copy" class="btn">Copy link</button></div></section>
 <aside id="wtct-alert-banner" class="wtct-alert-banner" role="status" aria-live="polite" aria-atomic="true" hidden><div class="wa-banner-content"><strong id="wa-banner-title">Price alert</strong><p id="wa-banner-body"></p><time id="wa-banner-time"></time></div><div class="wa-banner-actions"><button id="wa-banner-view" type="button">View alerts</button><button id="wa-banner-dismiss" type="button" aria-label="Dismiss price alert">Dismiss</button></div></aside>
+<audio id="wa-xrp-player" src="./assets/xrp-alert.wav" preload="auto" aria-hidden="true" hidden></audio>
 <div id="local" class="local" hidden><strong>Standalone preview.</strong> A saved one-day chart is included. Live prices and news require internet access. A public sharing link exists only after the site is published.</div>
 <section class="panel" aria-label="Cryptocurrency performance explorer">
 <div class="control-area"><div class="row"><span class="label time-label">Time range</span><div class="ranges" aria-label="Choose time range" id="ranges"></div></div><div class="row coins-head"><span class="label">Coins to compare</span><button class="text-btn" id="all">Compare all nine</button></div><div class="coin-controls" id="coins" aria-label="Choose cryptocurrencies"></div></div>
@@ -82,7 +83,7 @@ html,body{background:#120e24}body{background:radial-gradient(ellipse at 85% 0%,#
       <p class="wa-small">An original two-tone “whoop-whoop” alarm is included. No files, links or selection are required. It attempts to play automatically when an active XRP alert crosses below $0.90, $0.80 or $0.70 and this page is open.</p>
       <div class="wa-actions"><button id="wa-xrp-preview" class="wa-button" type="button">Test sound</button><button id="wa-xrp-mute" class="wa-button" type="button">Mute XRP sound</button></div>
       <p id="wa-xrp-sound-status" role="status" class="wa-small">XRP sound is enabled.</p>
-      <p class="wa-small">Enable the three price thresholds as active rules below if they are not already saved. Browsers can require a prior tap to allow sound, and sound cannot be guaranteed when the phone is locked or the web app is closed. Push notifications still work independently.</p>
+      <p class="wa-small">Enable the three price thresholds as active rules below if they are not already saved. Tap Test sound once to check iPhone playback. The sound is built in; no file is required. If silent, increase Media volume and check the output device. Custom web audio cannot play from a locked phone or closed app; push notifications still work independently.</p>
     </section>
     <form id="wa-rule-form" class="wa-form" novalidate>
       <h3>Add a price threshold</h3>
