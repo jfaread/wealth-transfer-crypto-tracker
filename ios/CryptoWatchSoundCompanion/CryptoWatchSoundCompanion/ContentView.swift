@@ -10,7 +10,8 @@ final class SoundCompanionModel: ObservableObject {
 
     func checkPermission() async {
         let settings = await centre.notificationSettings()
-        authorised = [.authorised, .provisional, .ephemeral].contains(settings.authorizationStatus)
+        let permission = settings.authorizationStatus
+        authorised = permission == .authorized || permission == .provisional || permission == .ephemeral
         status = authorised
             ? "iPhone notification permission is available."
             : "Enable notification permission to test the built-in sound."
