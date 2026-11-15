@@ -379,11 +379,19 @@ async function fetchCurrentQuotes(wanted,signal,retainedBundles=[]){
  const merge=raw=>{for(const id of wanted){try{const value=validCurrentQuotes(raw,[id]).get(id);if(!combined.has(id)||value.t>combined.get(id).t)combined.set(id,value);}catch{}}};
  let primaryError;
  if(signal.aborted)throw new DOMException('Cancelled','AbortError');
- try{merge(await requestJSON(url,signal,8000));}
- catch(e){if(signal.aborted)throw e;primaryError=e;}
+ // Prefer the verified, same-origin published feed. Browser requests to CoinGecko
+ // can be blocked by CORS, network policy or rate limits, especially on iOS.
+ // Never treat the cache's checkedAt as a price observation timestamp.
+ try{
+  const published=await requestJSON(new URL('./data/quotes.json',location.href).href,signal,4000,'reload');
+  if(published?.version!==1||!published.quotes)throw Error('Invalid published quote cache');
+  merge(published.quotes);
+ }catch(e){if(signal.aborted)throw e;}
+ // Query CoinGecko only for coins without a recent verified observation.
+ // This reduces free-provider traffic and avoids unnecessary failed refreshes.
  if(missing().length){
-  try{const fallback=await requestJSON(new URL('./data/quotes.json',location.href).href,signal,4000,'reload');if(fallback?.version!==1||!fallback.quotes)throw Error('Invalid quote cache');merge(fallback.quotes);}
-  catch(e){if(signal.aborted)throw e;}
+  try{merge(await requestJSON(url,signal,8000));}
+  catch(e){if(signal.aborted)throw e;primaryError=e;}
  }
  // At most one further primary request, after the published cache has been tried.
  // Malformed data and explicit provider pauses never trigger an automatic retry.
