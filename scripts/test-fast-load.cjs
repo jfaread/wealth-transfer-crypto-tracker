@@ -160,7 +160,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  // A valid but short saved period can receive a fresh quote without having
  // enough history to apply it. Keep the actionable reason after re-rendering.
  const shortHistory=structuredClone(oldSnapshots.ranges['1D']);shortHistory.savedAt=Date.now();shortHistory.spec.start=shortHistory.spec.end-2*3600000;
- for(const [,d]of shortHistory.data){const p=d.points.at(-1).p;d.base=p;d.points=[{t:shortHistory.spec.start,p,r:0},{t:shortHistory.spec.end,p,r:0,gapBefore:true}];d.gaps=1;}
+ for(const [,d]of shortHistory.data){const p=d.points.at(-1).p,middle=p*1.01;d.base=p;d.points=[{t:shortHistory.spec.start,p,r:0},{t:shortHistory.spec.start+3600000,p:middle,r:(middle/p-1)*100},{t:shortHistory.spec.end,p,r:0}];d.gaps=0;}
  const application=await openRefreshPage({stored:shortHistory,selected:['XRP']});
  await application.page.locator('#refresh').click();await waitForRefresh(application.page);assert.equal(application.calls.quote,1);assert.equal(application.calls.cache,0);assert.match(await application.page.locator('#warning').innerText(),/saved history no longer covers this period/);assert.match(await application.page.locator('#warning').innerText(),/Choose a longer period/);
  await application.page.locator('#wtct-timezone').selectOption('America/New_York');assert.match(await application.page.locator('#warning').innerText(),/Choose a longer period/);await application.page.close();
