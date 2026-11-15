@@ -126,9 +126,11 @@
     if (!expired) pageAlertExpiry = setTimeout(renderPageAlert, Math.max(1, Math.min(300000, pageAlert.expiresAt - Date.now())));
   }
 
-  // Optional local clip: never uploaded, fetched from third parties or stored in the public repository.
-  // Browsers may block playback when the document is backgrounded or not user-activated.
-  let xrpClip = null, xrpClipUrl = null, xrpAudioArmed = false;
+  // Original two-tone warning generated locally; no recording or external audio is used.
+  // Automatic Web Audio requires browser permission / previous user interaction.
+  const SOUND_SETTING = 'wtct:xrp-sound-muted';
+  let xrpMuted = false, xrpContext = null, lastXrpSound = 0;
+  try { xrpMuted = localStorage.getItem(SOUND_SETTING) === '1'; } catch (_) {}
   function qualifyingXrpEvent(title, body) {
     return /^XRP(?: price)? alert$/i.test(title) &&
       /^XRP crossed below \$(?:0\.9(?:0)?|0\.8(?:0)?|0\.7(?:0)?)\.(?:\s|$)/.test(body);
@@ -137,54 +139,67 @@
     const node = $('wa-xrp-sound-status');
     if (node) node.textContent = message;
   }
-  async function playXrpClip() {
-    if (!xrpAudioArmed || !xrpClip || document.hidden) return;
+  function unlockXrpAudio() {
+    if (xrpMuted || !window.AudioContext && !window.webkitAudioContext) return;
     try {
-      xrpClip.pause();
-      xrpClip.currentTime = 0;
-      await xrpClip.play();
-      xrpSoundStatus('XRP sound played in this open tab.');
-    } catch (_) {
-      xrpSoundStatus('Automatic audio was blocked by this browser. Re-arm sound with the Preview button.');
-    }
+      if (!xrpContext) {
+        const AudioCtor = window.AudioContext || window.webkitAudioContext;
+        xrpContext = new AudioCtor();
+      }
+      if (xrpContext.state === 'suspended') void xrpContext.resume().catch(() => {});
+    } catch (_) {}
   }
-  const xrpPicker = $('wa-xrp-clip');
-  xrpPicker?.addEventListener('change', () => {
-    const file = xrpPicker.files?.[0];
-    if (xrpClip) { xrpClip.pause(); xrpClip.removeAttribute('src'); xrpClip.load(); }
-    if (xrpClipUrl) URL.revokeObjectURL(xrpClipUrl);
-    xrpAudioArmed = false; xrpClipUrl = null; xrpClip = null;
-    if (!file) { xrpSoundStatus('No clip selected.'); return; }
-    if (!['audio/mpeg','audio/mp4','audio/wav','audio/x-wav','audio/ogg'].includes(file.type) ||
-        file.size < 100 || file.size > 4 * 1024 * 1024) {
-      xrpPicker.value = '';
-      xrpSoundStatus('Select an MP3, M4A, WAV or OGG clip no larger than 4 MB.');
-      return;
+  // No file picker or setup: the first ordinary tap can unlock sound.
+  for (const type of ['pointerdown', 'touchend', 'keydown']) {
+    document.addEventListener(type, unlockXrpAudio, {passive:true});
+  }
+  function playXrpSound(force=false) {
+    if (xrpMuted || !force && document.hidden) return false;
+    unlockXrpAudio();
+    if (!xrpContext || xrpContext.state !== 'running') {
+      xrpSoundStatus('Browser audio is restricted until you interact with this page. Push notifications still work.');
+      return false;
     }
-    xrpClipUrl = URL.createObjectURL(file);
-    xrpClip = new Audio(xrpClipUrl);
-    xrpClip.preload = 'auto';
-    xrpClip.volume = 0.7;
-    xrpSoundStatus('Clip ready. Tap Preview and arm sound to enable playback in this open tab.');
-  });
-  $('wa-xrp-preview')?.addEventListener('click', async () => {
-    if (!xrpClip) { xrpSoundStatus('Select an authorised sound clip first.'); return; }
-    xrpAudioArmed = true;
-    try {
-      xrpClip.pause(); xrpClip.currentTime = 0;
-      await xrpClip.play();
-      xrpSoundStatus('Sound armed for XRP crosses below $0.90, $0.80 or $0.70 while this tab stays open.');
-    } catch (_) {
-      xrpAudioArmed = false;
-      xrpSoundStatus('Audio permission blocked playback. Try tapping Preview again.');
+    const now = Date.now();
+    if (!force && now - lastXrpSound < 10000) return false;
+    lastXrpSound = now;
+    // Two gentle rising/falling alarm sweeps, not any sampled or transcribed song.
+    const start = xrpContext.currentTime + 0.015;
+    for (let i=0; i<2; i++) {
+      const oscillator = xrpContext.createOscillator();
+      const volume = xrpContext.createGain();
+      const t = start + i * 0.45;
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(460, t);
+      oscillator.frequency.exponentialRampToValueAtTime(710, t + 0.18);
+      oscillator.frequency.exponentialRampToValueAtTime(440, t + 0.36);
+      volume.gain.setValueAtTime(0.0001, t);
+      volume.gain.exponentialRampToValueAtTime(0.11, t + 0.045);
+      volume.gain.setValueAtTime(0.11, t + 0.27);
+      volume.gain.exponentialRampToValueAtTime(0.0001, t + 0.39);
+      oscillator.connect(volume); volume.connect(xrpContext.destination);
+      oscillator.start(t); oscillator.stop(t + 0.40);
+      oscillator.onended = () => { oscillator.disconnect(); volume.disconnect(); };
     }
+    xrpSoundStatus('Automatic XRP alert sound played in this open page.');
+    return true;
+  }
+  function refreshXrpSoundUi() {
+    const mute = $('wa-xrp-mute');
+    if (mute) mute.textContent = xrpMuted ? 'Unmute XRP sound' : 'Mute XRP sound';
+    xrpSoundStatus(xrpMuted ? 'XRP sound muted on this device.' : 'XRP sound is enabled. It plays on qualifying alerts when the browser permits audio.');
+  }
+  $('wa-xrp-preview')?.addEventListener('click', () => {
+    unlockXrpAudio();
+    if (!playXrpSound(true)) xrpSoundStatus('This browser did not allow audio. Try Preview after another tap.');
   });
   $('wa-xrp-mute')?.addEventListener('click', () => {
-    xrpAudioArmed = false;
-    xrpClip?.pause();
-    xrpSoundStatus('Automatic XRP sound is off.');
+    xrpMuted = !xrpMuted;
+    try { localStorage.setItem(SOUND_SETTING, xrpMuted ? '1' : '0'); } catch (_) {}
+    refreshXrpSoundUi();
   });
-  window.addEventListener('pagehide', () => { xrpAudioArmed = false; xrpClip?.pause(); });
+  refreshXrpSoundUi();
+  window.addEventListener('pagehide', () => { if (xrpContext) void xrpContext.suspend().catch(() => {}); });
 
   function receivePageAlert(event) {
     // A message from another page or another repository's worker is not an alert.
@@ -205,7 +220,7 @@
     if (seenPageAlerts.size > 100) seenPageAlerts.delete(seenPageAlerts.values().next().value);
     const xrpCrossed = !value.expired && value.expiresAt > now && qualifyingXrpEvent(title, body);
     pageAlert = { eventId: value.eventId, title: xrpCrossed ? 'XRP Alert' : title, body, observedAt: value.observedAt, expiresAt: value.expiresAt, expired: value.expired };
-    if (xrpCrossed) void playXrpClip();
+    if (xrpCrossed) playXrpSound();
     const banner = $('wtct-alert-banner');
     if (!banner) return;
     banner.hidden = false;
