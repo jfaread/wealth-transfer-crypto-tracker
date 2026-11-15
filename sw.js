@@ -30,7 +30,9 @@ function notificationPayload(raw, now = Date.now()) {
   if (!title || !body) return null;
   const expired = raw.expiresAt <= now || now - raw.observedAt > MAX_ALERT_AGE_MS;
   // Every valid push remains visible, as Safari requires. Expired prices are never presented as current.
-  return { ...raw, title: expired ? 'An earlier Crypto-Watch alert expired' : title,
+  // Present the short XRP wording without changing the signed backend payload.
+  const displayTitle = /^XRP price alert$/i.test(title) ? 'XRP Alert' : title;
+  return { ...raw, title: expired ? 'An earlier Crypto-Watch alert expired' : displayTitle,
     body: expired ? 'This alert arrived too late to show a current price. Open Crypto-Watch to check the latest data.' : body,
     expired, url };
 }
