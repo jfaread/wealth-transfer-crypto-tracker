@@ -359,6 +359,7 @@
     const nativeAvailable = connected && config?.nativeSound?.available === true;
     $('wa-native-pair-section').hidden = !nativeAvailable;
     $('wa-native-pair').disabled = busy || !nativeAvailable;
+    $('wa-native-rules').disabled = busy || !nativeAvailable || !available('XRP');
     if (!nativePairing || nativePairing.expiresAt <= Date.now()) nativePairing = null;
     $('wa-native-pair-code').hidden = !nativeAvailable || !nativePairing;
     $('wa-native-copy').hidden = !nativeAvailable || !nativePairing;
@@ -647,6 +648,28 @@
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
   });
   $('wa-refresh').addEventListener('click', () => perform(loadSetup));
+  $('wa-native-rules').addEventListener('click', () => perform(async () => {
+    if (!verified || !usableAuth() || config?.nativeSound?.available !== true || !available('XRP'))
+      throw new Error('Connect a native-capable alert device while XRP has fresh prices.');
+    const target = ['0.90','0.80','0.70'], next = remote.rules.map(item => ({...item}));
+    let changed = 0;
+    for (const amount of target) {
+      const existing = next.find(item => item.coin === 'XRP' && item.direction === 'below' &&
+        Number(item.threshold) === Number(amount));
+      if (existing) {
+        if (!existing.enabled || !existing.repeat) {
+          existing.enabled = true; existing.repeat = true; changed++;
+        }
+      } else {
+        next.push({id:crypto.randomUUID(),coin:'XRP',direction:'below',threshold:amount,repeat:true,enabled:true});
+        changed++;
+      }
+    }
+    if (next.length > MAX_RULES) throw new Error('Not enough free rule slots to enable the three XRP thresholds.');
+    if (changed) await saveRemoteRules(next);
+    notice(changed ? 'The three XRP below-price alerts are enabled. Each waits for a genuine future crossing.' :
+      'All three XRP below-price alerts are already enabled.');
+  }));
   $('wa-native-pair').addEventListener('click', () => perform(async () => {
     if (!verified || !usableAuth() || config?.nativeSound?.available !== true) {
       throw new Error('Native pairing is not enabled. Your existing alerts are unchanged.');
