@@ -2,6 +2,9 @@ import {COINS, normaliseRule, evaluateRule, validateQuote} from './core.mjs';
 import {LIVE_COINS, parseKrakenMessage, connectKraken, reconnectDelay} from './feeds.mjs';
 import {POOL_COINS, POOL_POLL_MS, MAX_RPC_REQUESTS_PER_POLL, POOL_SOURCES, pollPoolPrices} from './pool-feeds.mjs';
 import {validateSubscription, sendPush} from './webpush.mjs';
+import {NativeRegistrationStore} from '../ios/CryptoWatchSoundCompanion/Server/native-registry.mjs';
+import {NativeXrpOutbox} from '../ios/CryptoWatchSoundCompanion/Server/native-xrp-outbox.mjs';
+import {handleNativeRegistration} from '../ios/CryptoWatchSoundCompanion/Server/native-registration-api.mjs';
 
 const SITE_URL = 'https://jfaread.github.io/wealth-transfer-crypto-tracker/';
 const SITE_ORIGIN = 'https://jfaread.github.io';
@@ -71,6 +74,15 @@ function isActive(env) {
     && (!env.PUBLIC_SITE_URL || env.PUBLIC_SITE_URL === SITE_URL)
     && (!env.ALLOWED_ORIGIN || env.ALLOWED_ORIGIN === SITE_ORIGIN);
 }
+function nativeConfigured(env) {
+  return isActive(env) && env.NATIVE_APNS_ENABLED === 'true'
+    && /^[A-Z0-9]{10}$/.test(env.NATIVE_APNS_TEAM_ID || '')
+    && /^[A-Z0-9]{10}$/.test(env.NATIVE_APNS_KEY_ID || '')
+    && typeof env.NATIVE_APNS_PRIVATE_KEY === 'string'
+    && env.NATIVE_APNS_PRIVATE_KEY.startsWith('-----BEGIN PRIVATE KEY-----')
+    && env.NATIVE_APNS_BUNDLE_ID === 'com.jfaread.cryptowatch.sound'
+    && ['production','sandbox'].includes(env.NATIVE_APNS_ENVIRONMENT);
+}
 function cors(response, request) {
   const result = new Response(response.body, response);
   result.headers.set('Vary', 'Origin');
@@ -126,7 +138,12 @@ function publicDevice(device, monitor) {
 export default {
   async fetch(request, env) {
     try {
-      checkOrigin(request);
+      const nativePath = new URL(request.url).pathname;
+      if (nativePath.startsWith('/v1/native/')) {
+        const origin = request.headers.get('Origin');
+        if (nativePath === '/v1/native/pairings') checkOrigin(request);
+        else if (origin) throw new ApiError(403,'native_only','Use the installed native app for device registration.');
+      } else checkOrigin(request);
       if (request.method === 'OPTIONS') return cors(new Response(null, {status: 204}), request);
       if (!new URL(request.url).pathname.startsWith('/v1/')) return cors(json({error: {code: 'not_found', message: 'Not found.'}}, 404), request);
       if (!env.ALERT_MONITOR) return cors(json({error: {code: 'not_configured', message: 'The alert service has not been connected yet.'}}, 503), request);
@@ -156,6 +173,21 @@ export class CryptoAlertMonitor {
     this.pending = new Map();
     this.operations = new Map();
     this.ipBuckets = new Map();
+    this.nativeRegistry = new NativeRegistrationStore({
+      storage: ctx.storage, now: this.now,
+      ownerExists: async id => this.devices.has(id),
+      environment: env.NATIVE_APNS_ENVIRONMENT === 'sandbox' ? 'sandbox' : 'production',
+    });
+    this.nativeOutbox = new NativeXrpOutbox({
+      storage: ctx.storage, registry: this.nativeRegistry, now: this.now,
+      settings: nativeConfigured(env) ? {
+        teamId: env.NATIVE_APNS_TEAM_ID, keyId: env.NATIVE_APNS_KEY_ID,
+        privateKeyPEM: env.NATIVE_APNS_PRIVATE_KEY,
+        bundleId: env.NATIVE_APNS_BUNDLE_ID,
+        environment: env.NATIVE_APNS_ENVIRONMENT,
+        fetchImpl: this.fetchImpl,
+      } : null,
+    });
     this.serial = Promise.resolve();
     this.socket = null;
     this.connecting = false;
@@ -230,8 +262,13 @@ export class CryptoAlertMonitor {
   async fetch(request) {
     try {
       await this.ready;
-      checkOrigin(request);
       const path = new URL(request.url).pathname;
+      if (path.startsWith('/v1/native/')) return await handleNativeRegistration(request,{
+        registry:this.nativeRegistry,
+        authenticateWebOwner: input => this.authenticate(input),
+        enabled:nativeConfigured(this.env),
+      });
+      checkOrigin(request);
       if (request.method === 'GET' && path === '/v1/config') {
         if (isActive(this.env)) {
           await this.locked(async () => {
@@ -309,6 +346,7 @@ export class CryptoAlertMonitor {
     });
     return {version: 1, enabled: active, vapidPublicKey: active ? this.env.VAPID_PUBLIC_KEY : null,
       siteUrl: SITE_URL, consentVersion: CONSENT_VERSION, coins,
+       nativeSound: {available: nativeConfigured(this.env), thresholds: ['0.90','0.80','0.70'], pairingExpiresInSeconds:300},
       capabilities: Object.fromEntries(coins.map(c => [c.id, {available: c.enabled, reason: c.reason, source: c.source}])),
       limits: {maxDevices: boundedInt(this.env.MAX_DEVICES, 50, 50), maxRules: MAX_RULES,
         maxPushesPerDevicePerDay: 20, maxPushesPerDay: 200, maxFeedFramesPerDay: this.frameCap(),
@@ -514,6 +552,10 @@ export class CryptoAlertMonitor {
   }
 
   async remove(id) {
+    if (nativeConfigured(this.env)) {
+      await this.nativeOutbox.cancelParent(id);
+      await this.nativeRegistry.revokeOwner(id);
+    }
     const keys = [`device:${id}`];
     for (const [key, operation] of this.operations) if (operation.deviceId === id) keys.push(`operation:${key}`);
     for (const [key, job] of this.pending) if (job.deviceId === id) keys.push(`outbox:${key}`);
@@ -733,6 +775,7 @@ export class CryptoAlertMonitor {
 
   async processQuotes(quotes, poolGenerations) {
     await this.ready;
+    let nativeQueued = false;
     if (!isActive(this.env)) return;
     await this.locked(async () => {
       const now = this.now();
@@ -761,7 +804,7 @@ export class CryptoAlertMonitor {
           if (!relevant.length) continue;
           const states = {...(this.states.get(id) || {})};
           let device = current;
-          const jobs = [];
+          const jobs = [], nativeJobs = [];
           for (const rule of relevant) {
             const previous = states[rule.id] || null;
             const result = evaluateRule(rule, input.snapshot && previous ? {...previous, needsBaseline: true} : previous, quote, now);
@@ -775,6 +818,12 @@ export class CryptoAlertMonitor {
               url: SITE_URL, observedAt: quote.timestamp, expiresAt: now + EVENT_TTL};
             jobs.push({eventId, deviceId: id, payload, createdAt: now, expiresAt: payload.expiresAt,
               status: 'queued', attempts: 0, nextAttemptAt: now});
+            // Only exact, genuinely evaluated XRP events can enter the native
+            // queue. Native failures never cause a Web Push event to be dropped.
+            if (nativeConfigured(this.env) && rule.coin === 'XRP' && rule.direction === 'below') {
+              try { nativeJobs.push(...await this.nativeOutbox.prepare(id, {...event,type:'threshold'})); }
+              catch {} // Unsupported native thresholds leave Web Push unchanged.
+            }
             device = {...device, events: [{...event, id: eventId, type: 'threshold', status: 'queued'}, ...device.events].slice(0, 50)};
             if (!rule.repeat) device = {...device, rules: device.rules.map(r => r.id === rule.id ? {...r, enabled: false} : r), revision: device.revision + 1};
           }
@@ -783,15 +832,18 @@ export class CryptoAlertMonitor {
             await this.ctx.storage.transaction(async tx => {
               await tx.put(`device:${id}`, device);
               for (const job of jobs) await tx.put(`outbox:${job.eventId}`, job);
+              if (nativeJobs.length) await this.nativeOutbox.saveInTransaction(tx,nativeJobs);
             });
             this.devices.set(id, device);
             for (const job of jobs) this.pending.set(job.eventId, job);
+            if (nativeJobs.length) nativeQueued = true;
           }
           this.states.set(id, states);
         }
       }
-      if (this.pending.size) await this.scheduleAlarm(now + 1_000);
+      if (this.pending.size || nativeQueued) await this.scheduleAlarm(now + 1_000);
     });
+    if (nativeQueued) this.background(this.nativeOutbox.drain());
   }
 
   overBudget(device, now) {
@@ -901,6 +953,7 @@ export class CryptoAlertMonitor {
       if (!this.needsFeed()) this.closeFeed();
       await this.ensureSources();
       await this.drainOutbox();
+      if (nativeConfigured(this.env)) await this.nativeOutbox.drain();
     } finally {
       await this.planWake();
     }

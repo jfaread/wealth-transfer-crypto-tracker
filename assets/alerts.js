@@ -69,6 +69,7 @@
   let setupProblem = '';
   const seenPageAlerts = new Set();
   let pageAlert = null, pageAlertExpiry = null;
+  let nativePairing = null; // short-lived, never saved in localStorage
 
   function persist(next = local) {
     try { localStorage.setItem(KEY, JSON.stringify(next)); local = next; }
@@ -355,6 +356,15 @@
     const monitorMessage = typeof remote.monitor?.message === 'string' ? remote.monitor.message.slice(0,400) : '';
     $('wa-monitor').hidden = !connected || (!lastObservation && !monitorMessage);
     $('wa-monitor').textContent = [monitorMessage, lastObservation ? 'Latest market observation: ' + lastObservation + '.' : '', 'A recorded observation does not guarantee notification delivery.'].filter(Boolean).join(' ');
+    const nativeAvailable = connected && config?.nativeSound?.available === true;
+    $('wa-native-pair-section').hidden = !nativeAvailable;
+    $('wa-native-pair').disabled = busy || !nativeAvailable;
+    if (!nativePairing || nativePairing.expiresAt <= Date.now()) nativePairing = null;
+    $('wa-native-pair-code').hidden = !nativeAvailable || !nativePairing;
+    $('wa-native-copy').hidden = !nativeAvailable || !nativePairing;
+    $('wa-native-copy').disabled = busy;
+    $('wa-native-pair-code').textContent = nativePairing ?
+      'One-time code (expires after five minutes): ' + nativePairing.pairingCode : '';
   }
 
   function validatedBase(value) {
@@ -390,7 +400,8 @@
       coins.push({ id: item.id, enabled: item.enabled, source: item.source || 'Source not connected', reason: item.reason || '', maxAgeMs: item.maxAgeMs });
     }
     if (value.enabled) publicKey(value.vapidPublicKey);
-    return { enabled: value.enabled, vapidPublicKey: value.vapidPublicKey, coins };
+    return { enabled: value.enabled, vapidPublicKey: value.vapidPublicKey, coins,
+      nativeSound: {available:value.nativeSound?.available === true} };
   }
 
   async function jsonRequest(url, options = {}) {
@@ -636,6 +647,31 @@
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
   });
   $('wa-refresh').addEventListener('click', () => perform(loadSetup));
+  $('wa-native-pair').addEventListener('click', () => perform(async () => {
+    if (!verified || !usableAuth() || config?.nativeSound?.available !== true) {
+      throw new Error('Native pairing is not enabled. Your existing alerts are unchanged.');
+    }
+    const result = await api('/v1/native/pairings', 'POST', {}, true);
+    if (!result || !/^[a-f0-9]{64}$/i.test(result.pairingCode) ||
+        !Number.isSafeInteger(result.expiresAt) || result.expiresAt <= Date.now() ||
+        result.expiresAt > Date.now() + 300001) throw new Error('The one-time pairing response was invalid.');
+    nativePairing = {pairingCode:result.pairingCode, expiresAt:result.expiresAt};
+    notice('Pairing code created. Copy it into the installed native iPhone app within five minutes.');
+  }));
+  $('wa-native-copy').addEventListener('click', () => {
+    if (!nativePairing || nativePairing.expiresAt <= Date.now()) {
+      nativePairing = null; render(); notice('The code expired. Request a new one.',true);return;
+    }
+    // Clipboard only from a user tap. The secret is never saved to website storage.
+    if (!navigator.clipboard?.writeText) {
+      notice('Select and copy the code shown above. Clipboard access is unavailable here.',true);
+      return;
+    }
+    navigator.clipboard.writeText(nativePairing.pairingCode)
+      .then(() => notice('One-time code copied. Paste it into the native iPhone app.'))
+      .catch(() => notice('Copy was blocked. Select and copy the code shown above.',true));
+  });
+  dialog.addEventListener('close', () => {nativePairing=null; render();});
   $('wa-connect').addEventListener('click', connect);
   $('wa-coin').addEventListener('change', render);
   $('wa-activate-drafts').addEventListener('click', () => perform(() => activateDrafts()));

@@ -5,6 +5,9 @@ on:
     branches: [feature/ios-native-xrp-sound]
     paths:
       - 'ios/CryptoWatchSoundCompanion/**'
+      - 'alerts/**'
+      - 'index.html'
+      - 'assets/alerts.js'
       - '.github/workflows/verify-native-xrp-sound.yml'
 permissions:
   contents: read
@@ -17,6 +20,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '26.13.1'
+      - run: npm ci --ignore-scripts
+      - name: Compile and test original Web Push monitor and dormant native bridge
+        run: |
+          npm run check:worker -- --minify
+          npm test
+          npm run build
+          npm run test:alerts-browser
       - name: Verify APNs payload and secure native pairing without contacting Apple
         run: node --test ios/CryptoWatchSoundCompanion/Server/*.test.mjs
   ios-simulator-build:
