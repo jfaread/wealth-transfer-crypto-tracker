@@ -54,8 +54,13 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  const page=await browser.newPage();await page.route('**/*',async route=>{if(route.request().url()==='https://tracker.test/'){await route.fulfill({contentType:'text/html',body:html});return;}if(await serveAsset(route))return;await route.abort();});await page.goto('https://tracker.test/');assert.equal(await page.locator('[data-series]').count(),CHART_COINS.length);await page.close();
  // Manual refresh must fetch fresh quotes, preserve history and permit immediate retries after failure.
  const oldSnapshots=JSON.parse(snapshots),aged=Date.now()-3*3600000;
- for(const b of Object.values(oldSnapshots.ranges)){b.savedAt=aged;b.spec.historySavedAt=aged;for(const [,d]of b.data)d.historySavedAt=aged;}
- const oldHtml=html.replace(/(<script id="wtct-bootstrap" type="application\/json">)([\s\S]*?)(<\/script>)/,(_,a,payload,b)=>{const j=JSON.parse(payload);for(const x of Object.values(j.ranges)){x.savedAt=aged;x.spec.historySavedAt=aged;for(const [,d]of x.data)d.historySavedAt=aged;}return a+JSON.stringify(j)+b;});
+ for(const b of Object.values(oldSnapshots.ranges)){
+  // Age the observations as well as the write time, independently of the
+  // latest scheduled data publication used to build the test site.
+  const shift=aged-b.spec.end;b.savedAt=aged;b.spec.start+=shift;b.spec.end=aged;b.spec.historySavedAt=aged;
+  for(const [,d]of b.data){d.historySavedAt=aged;for(const point of d.points)point.t+=shift;}
+ }
+ const oldHtml=html.replace(/(<script id="wtct-bootstrap" type="application\/json">)([\s\S]*?)(<\/script>)/,(_,a,payload,b)=>{const j=JSON.parse(payload);for(const range of Object.keys(j.ranges))j.ranges[range]=oldSnapshots.ranges[range];return a+JSON.stringify(j)+b;});
  const cg={BTC:'bitcoin',ETH:'ethereum',BNB:'binancecoin',XRP:'ripple',SOL:'solana',SHIB:'shiba-inu',KISHU:'kishu-inu',WKC:'wiki-cat',CREPE:'crepe-2'};
  const quoteResponse=Object.fromEntries(oldSnapshots.ranges['1D'].data.map(([id,d])=>[cg[id],{usd:d.points.at(-1).p*1.01,last_updated_at:Math.floor(Date.now()/1000)}]));
  const cachedQuotes=Object.fromEntries(Object.entries(quoteResponse).map(([id,q])=>[id,{...q,usd:q.usd*1.02}]));
@@ -79,7 +84,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
   const heldHistory=[];let historyWaiter=null;
   const nextHistory=()=>heldHistory.length?Promise.resolve(heldHistory.shift()):new Promise((resolve,reject)=>{const timer=setTimeout(()=>{historyWaiter=null;reject(Error('Expected the next historical request.'));},5000);historyWaiter=route=>{clearTimeout(timer);resolve(route);};});
   if(settings.clock)await page.clock.install({time:Date.now()});
-  if(settings.stored)await page.addInitScript(value=>localStorage.setItem('wtct:v3:range:1D',JSON.stringify(value)),settings.stored);
+  if(settings.stored)await page.addInitScript(value=>{if(!localStorage.getItem('wtct:v3:range:1D'))localStorage.setItem('wtct:v3:range:1D',JSON.stringify(value));},settings.stored);
   await page.route('**/*',async route=>{
    const u=new URL(route.request().url());
    if(u.origin==='https://tracker.test'&&u.pathname==='/'){await route.fulfill({contentType:'text/html',body:oldHtml});return;}
@@ -92,8 +97,10 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
    }
    if(u.hostname==='api.coingecko.com'&&u.pathname==='/api/v3/simple/price'){
     calls.quote++;calls.events.push('quotes');calls.requestedCoins.push(u.searchParams.get('ids'));
+    const mode=settings.primarySequence?.length?settings.primarySequence.shift():settings.primary;
     await new Promise(r=>setTimeout(r,200));
-    await route.fulfill({status:settings.primary==='failed'?503:200,contentType:'application/json',body:JSON.stringify(settings.primary==='failed'?{}:quotePayload(settings.primary))});return;
+    if(mode==='network'){await route.abort();return;}
+    await route.fulfill({status:mode==='failed'?503:mode==='rate-limited'?429:200,headers:mode==='rate-limited'?{'Retry-After':'120'}:{},contentType:'application/json',body:JSON.stringify(['failed','rate-limited'].includes(mode)?{}:quotePayload(mode))});return;
    }
    if(u.hostname==='api.coingecko.com'&&u.pathname.endsWith('/market_chart')){
     calls.history++;calls.events.push('history');
@@ -115,10 +122,48 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  await refreshPage.locator('#refresh').click();assert(await refreshPage.locator('#refresh').isDisabled());await waitForRefresh(refreshPage);
  await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert.equal(calls.quote,1);
  const freshState=await refreshPage.evaluate(()=>window.WealthTransferCryptoTracker.getState());assert(Date.now()-freshState.end<300000);assert.equal(freshState.series.length,CHART_COINS.length);assert(freshState.series.every(x=>x.last.p>0));assert.equal(freshState.series.find(x=>x.id==='SHIB').last.p,quoteResponse['shiba-inu'].usd,'SHIB receives a fresh quote with the full comparison');assert((await refreshPage.locator('#warning').innerText()).includes('history'));
- settings.primary='failed';await refreshPage.locator('#refresh').click();await waitForRefresh(refreshPage);await refreshPage.getByText(/Current quotes could not be checked/).waitFor();assert.equal(calls.quote,2);assert.equal(await refreshPage.locator('[data-series]').count(),CHART_COINS.length);
- settings.primary='fresh';await refreshPage.locator('#refresh').click();await waitForRefresh(refreshPage);await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert.equal(calls.quote,3);assert(!/15 seconds|allow 15/i.test(await refreshPage.locator('body').innerText()));
+ settings.primary='failed';await refreshPage.locator('#refresh').click();await waitForRefresh(refreshPage);await refreshPage.getByText(/^Saved quotes ·/).waitFor();assert.equal(calls.quote,3);assert.equal(await refreshPage.locator('[data-series]').count(),CHART_COINS.length);
+ const retainedState=await refreshPage.evaluate(()=>window.WealthTransferCryptoTracker.getState());assert.deepEqual(retainedState.series.map(x=>x.last),freshState.series.map(x=>x.last),'Failed requests must preserve each verified observation and its timestamp');assert.equal(retainedState.errors.length,0);assert.match(await refreshPage.locator('#warning').innerText(),/Could not check for newer prices/);
+ settings.primary='fresh';await refreshPage.locator('#refresh').click();await waitForRefresh(refreshPage);await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert.equal(calls.quote,4);assert(!/15 seconds|allow 15/i.test(await refreshPage.locator('body').innerText()));assert(!/Could not check for newer prices/.test(await refreshPage.locator('#warning').innerText()));
  settings.history='fresh';await refreshPage.locator('#refresh').click();await waitForRefresh(refreshPage);await refreshPage.getByText(/^Quotes updated ·/).waitFor();assert(calls.history>=CHART_COINS.length);assert(await refreshPage.locator('#warning').isHidden(),'Repaired history should clear warning');
  await refreshPage.locator('#wtct-timezone').selectOption('America/New_York');await refreshPage.reload();assert.equal(await refreshPage.locator('#wtct-timezone').inputValue(),'America/New_York');assert((await refreshPage.locator('#dates').innerText()).includes('Eastern Time'));await refreshPage.close();
+ // Reproduce the XRP screenshot: its two-minute-old quote remains usable,
+ // while a failed new check must stay labelled as saved after UI changes.
+ const recent=structuredClone(oldSnapshots.ranges['1D']),recentNow=Date.now(),observedAt=recentNow-120000,recentShift=observedAt-recent.spec.end;
+ recent.savedAt=recentNow-60000;recent.spec.quoteCheckedAt=recentNow-60000;recent.spec.start+=recentShift;recent.spec.end=observedAt;
+ for(const [,d]of recent.data){
+  for(const point of d.points)point.t+=recentShift;
+  const last=d.points.at(-1);if(last.t<observedAt){const gapBefore=observedAt-last.t>recent.spec.step*1.5;d.points.push({t:observedAt,p:last.p,r:last.r,...(gapBefore?{gapBefore:true}:{})});if(gapBefore)d.gaps++;}
+ }
+ const xrp=await openRefreshPage({primary:'network',stored:recent,selected:['XRP']});
+ await xrp.page.getByRole('button',{name:/^Price ·/}).click();const beforeXrp=await xrp.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
+ await xrp.page.locator('#refresh').click();await waitForRefresh(xrp.page);await xrp.page.getByText(/^Saved quotes ·/).waitFor();
+ const savedXrp=await xrp.page.evaluate(()=>JSON.parse(localStorage.getItem('wtct:v3:range:1D')));
+ assert.equal(xrp.calls.quote,2);assert.equal(xrp.calls.cache,1);assert.equal(savedXrp.savedAt,recent.savedAt);assert.equal(savedXrp.spec.quoteCheckedAt,recent.spec.quoteCheckedAt);assert.equal(savedXrp.spec.quoteRefresh.state,'saved');assert.deepEqual(savedXrp.spec.quoteRefresh.retainedIds,['XRP']);assert.equal(savedXrp.data[0][1].points.at(-1).t,observedAt);assert.equal(savedXrp.data[0][1].points.at(-1).p,beforeXrp.series[0].last.p);
+ assert.match(await xrp.page.locator('#warning').innerText(),/Could not check for newer prices for XRP/);assert.equal(await xrp.page.locator('#status').getAttribute('class'),'status failed');
+ await xrp.page.locator('#wtct-timezone').selectOption('America/New_York');await xrp.page.getByText(/^Saved quotes ·.*Eastern Time/).waitFor();
+ await xrp.page.reload();await xrp.page.getByText(/^Saved quotes ·.*Eastern Time/).waitFor();assert.equal(xrp.calls.quote,2);assert.match(await xrp.page.locator('#warning').innerText(),/Could not check for newer prices for XRP/);
+ xrp.settings.primary='fresh';await xrp.page.locator('#refresh').click();await waitForRefresh(xrp.page);await xrp.page.getByText(/^Quotes updated ·/).waitFor();assert.equal(xrp.calls.quote,3);
+ const renewedXrp=await xrp.page.evaluate(()=>JSON.parse(localStorage.getItem('wtct:v3:range:1D')));assert.equal(renewedXrp.spec.quoteRefresh.state,'updated');assert.deepEqual(renewedXrp.spec.quoteRefresh.retainedIds,[]);assert.equal(renewedXrp.data[0][1].points.at(-1).p,quoteResponse.ripple.usd);assert(!/Could not check for newer prices/.test(await xrp.page.locator('#warning').innerText()));await xrp.page.close();
+ // A mixed result labels only the retained coin as saved when selecting it.
+ const mixed=await openRefreshPage({primary:'selected-only',stored:recent,selected:['BTC','XRP']});
+ await mixed.page.locator('#refresh').click();await waitForRefresh(mixed.page);await mixed.page.getByText(/^Saved quotes ·/).waitFor();
+ const mixedState=await mixed.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());assert.equal(mixed.calls.quote,1);assert.equal(mixed.calls.cache,1);assert.equal(mixedState.series.find(x=>x.id==='BTC').last.p,quoteResponse.bitcoin.usd);assert.equal(mixedState.series.find(x=>x.id==='XRP').last.t,observedAt);
+ await mixed.page.getByRole('button',{name:'Show only Bitcoin',exact:true}).click();await mixed.page.getByText(/^Quotes updated ·/).waitFor();
+ await mixed.page.getByRole('button',{name:/^Price ·/}).click();await mixed.page.getByRole('button',{name:'Toggle XRP',exact:true}).click();await mixed.page.getByText(/^Saved quotes ·/).waitFor();assert.match(await mixed.page.locator('#warning').innerText(),/Could not check for newer prices for XRP/);assert.equal(mixed.calls.quote,1);await mixed.page.close();
+ // A transient failure receives just one retry, after the published fallback.
+ const retry=await openRefreshPage({primarySequence:['network','fresh'],stored:recent,selected:['XRP']});
+ await retry.page.locator('#refresh').click();await waitForRefresh(retry.page);await retry.page.getByText(/^Quotes updated ·/).waitFor();assert.equal(retry.calls.quote,2);assert.equal(retry.calls.cache,1);assert.deepEqual(retry.calls.events.filter(x=>x!=='history'),['quotes','cache','quotes']);await retry.page.close();
+ const quoteLimited=await openRefreshPage({primary:'rate-limited',stored:recent,selected:['XRP']});
+ await quoteLimited.page.locator('#refresh').click();await waitForRefresh(quoteLimited.page);await quoteLimited.page.getByText(/^Saved quotes ·/).waitFor();assert.equal(quoteLimited.calls.quote,1);assert.equal(quoteLimited.calls.cache,1);
+ await quoteLimited.page.locator('#refresh').click();await waitForRefresh(quoteLimited.page);assert.equal(quoteLimited.calls.quote,1,'A manual retry also respects the provider cooldown');await quoteLimited.page.close();
+ // A valid but short saved period can receive a fresh quote without having
+ // enough history to apply it. Keep the actionable reason after re-rendering.
+ const shortHistory=structuredClone(oldSnapshots.ranges['1D']);shortHistory.savedAt=Date.now();shortHistory.spec.start=shortHistory.spec.end-2*3600000;
+ for(const [,d]of shortHistory.data){const p=d.points.at(-1).p,middle=p*1.01;d.base=p;d.points=[{t:shortHistory.spec.start,p,r:0},{t:shortHistory.spec.start+3600000,p:middle,r:(middle/p-1)*100},{t:shortHistory.spec.end,p,r:0}];d.gaps=0;}
+ const application=await openRefreshPage({stored:shortHistory,selected:['XRP']});
+ await application.page.locator('#refresh').click();await waitForRefresh(application.page);assert.equal(application.calls.quote,1);assert.equal(application.calls.cache,0);assert.match(await application.page.locator('#warning').innerText(),/saved history no longer covers this period/);assert.match(await application.page.locator('#warning').innerText(),/Choose a longer period/);
+ await application.page.locator('#wtct-timezone').selectOption('America/New_York');assert.match(await application.page.locator('#warning').innerText(),/Choose a longer period/);await application.page.close();
  // HTTP 200 is insufficient: stale or incomplete selected prices must use the verified fallback.
  for(const primary of ['stale','missing','missing-shib']){
   const test=await openRefreshPage({primary,cache:'fresh'});
@@ -131,9 +176,11 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  // Two stale quote sets retain the original dated chart, then allow an immediate retry.
  const stale=await openRefreshPage({primary:'stale',cache:'stale'});
  const beforeStale=await stale.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
- await stale.page.locator('#refresh').click();await waitForRefresh(stale.page);await stale.page.getByText(/Current quotes could not be checked/).waitFor();
+ await stale.page.locator('#refresh').click();await waitForRefresh(stale.page);await stale.page.getByText(/^Update unavailable · prices from/).waitFor();
  const afterStale=await stale.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
  assert.equal(stale.calls.quote,1);assert.equal(stale.calls.cache,1);assert.equal(afterStale.end,beforeStale.end);assert.deepEqual(afterStale.series,beforeStale.series);assert(afterStale.errors.length>0);
+ await stale.page.locator('#wtct-timezone').selectOption('America/New_York');await stale.page.getByText(/^Update unavailable · prices from.*Eastern Time/).waitFor();
+ await stale.page.getByRole('button',{name:'Show only XRP',exact:true}).click();await stale.page.getByText(/^Update unavailable · prices from/).waitFor();await stale.page.reload();await stale.page.getByText(/^Update unavailable · prices from/).waitFor();await stale.page.getByRole('button',{name:'Compare all nine',exact:true}).click();
  stale.settings.primary='fresh';await stale.page.locator('#refresh').click();await waitForRefresh(stale.page);await stale.page.getByText(/^Quotes updated ·/).waitFor();assert.equal(stale.calls.quote,2);assert.equal(await stale.page.locator('[data-series]').count(),CHART_COINS.length);await stale.page.close();
  // A one-coin selection must not require quotes for the eight unselected coins.
  const selected=await openRefreshPage({primary:'stale',cache:'selected-only',selected:['BTC']});
@@ -153,7 +200,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
   // Provider series can end at different times. Pin the intended fixture age
   // independently of the prepared snapshot's newest series.
   const last=d.points.at(-1),target=id==='BTC'?staleAt:cacheNow;
-  if(last.t<target){const gapBefore=target-last.t>stored.spec.step*1.5;d.points.push({...last,t:target,gapBefore});if(gapBefore)d.gaps++;}
+  if(last.t<target){const gapBefore=target-last.t>stored.spec.step*1.5;d.points.push({t:target,p:last.p,r:last.r,...(gapBefore?{gapBefore:true}:{})});if(gapBefore)d.gaps++;}
  }
  const local=await openRefreshPage({stored});
  await local.page.getByText(/^Older quotes ·/).waitFor();assert.equal(local.calls.quote,0);assert.equal((await local.page.evaluate(()=>window.WealthTransferCryptoTracker.getState())).end,cacheNow);assert(await local.page.locator('#warning').isVisible());
@@ -183,6 +230,6 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  await slow.page.clock.fastForward(6000);await waitForRefresh(slow.page);await slow.page.getByText(/^Quotes updated ·/).waitFor();
  assert.equal(slow.calls.quote,1);assert(slow.calls.history>=2&&slow.calls.history<=3,"Only the two bounded repair lanes may run before the shared deadline");assert.equal(await slow.page.locator('[data-series]').count(),CHART_COINS.length);assert((await slow.page.locator('#warning').innerText()).includes('history'));
  await secondRoute.abort().catch(()=>{});await slow.page.close();
- console.log('PASS: history repair, persisted Eastern Time, current-quote refresh, in-flight button guard, stale/missing HTTP-200 fallback, stale-source rejection, selected-coin and SHIB-only validation, actual cached-quote age, quotes before rate-limited history, shared history deadline and immediate retry.');
+ console.log('PASS: history repair, persisted Eastern Time, current-quote refresh, retained XRP timestamps and honest saved status through reload/selection, partial remote recovery, bounded transient retry and provider cooldown, in-flight button guard, stale/missing HTTP-200 fallback, stale-source rejection, selected-coin and SHIB-only validation, actual cached-quote age, quotes before rate-limited history, shared history deadline and immediate retry.');
  await browser.close();console.log('PASS: immediate offline chart, single snapshot request, all nine coins across prepared periods, SHIB price and comparison restoration, rapid selections, Price-button switching and comparison restoration, tiny prices, mobile widths and isolated Jon George panel.');
 })().catch(e=>{console.error(e);process.exit(1);});

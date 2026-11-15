@@ -164,6 +164,14 @@ function validBundle(b){
    if(d.points[0].t!==s.start||d.points[0].p!==d.base||Math.abs(d.points[0].r)>1e-9||gaps!==d.gaps||s.end-d.points.at(-1).t>s.step)return false;
    if(['Binance','Binance + Gate (KISHU)'].includes(s.source)&&d.points.at(-1).t!==s.end)return false;
   }
+  if(s.quoteRefresh!==undefined){
+   const r=s.quoteRefresh;
+   if(!r||typeof r!=='object'||Array.isArray(r)||!['saved','updated','failed'].includes(r.state)||!['quotes','chart'].includes(r.phase)||!Number.isSafeInteger(r.attemptedAt)||r.attemptedAt<=0||r.attemptedAt>Date.now()+300000)return false;
+   const validIds=list=>Array.isArray(list)&&list.length<=seen.size&&new Set(list).size===list.length&&list.every(id=>typeof id==='string'&&seen.has(id));
+   if(!validIds(r.retainedIds)||!validIds(r.failedIds)||r.retainedIds.some(id=>r.failedIds.includes(id))||(r.failureMessage!==null&&(typeof r.failureMessage!=='string'||r.failureMessage.length>300)))return false;
+   if(r.state==='updated'&&(r.retainedIds.length||r.failedIds.length)||r.state==='saved'&&(!r.retainedIds.length||r.failedIds.length)||r.state==='failed'&&!r.failedIds.length)return false;
+   if(r.state!=='failed'&&r.phase!=='quotes')return false;
+  }
   return true;
  }catch(_){return false;}
 }
@@ -172,25 +180,32 @@ for(const range of Object.keys(RANGES)){const stored=storageRead('range:'+range)
 const serverAPI=http&&document.querySelector('meta[name="wtct-api-mode"]')?.content==='server';
 async function requestJSON(url,signal,timeout=8000,cacheMode='no-store'){
  const host=new URL(url).origin,until=backoffs.get(host)||0;
- if(Date.now()<until){const e=Error('The free source is cooling down. Retry after '+dateText(until)+' '+zoneLabel()+'.');e.status=429;throw e;}
- const ac=new AbortController(),cancel=()=>ac.abort();let timedOut=false;
+ if(Date.now()<until){const e=Error('The free source is cooling down. Retry after '+dateText(until)+' '+zoneLabel()+'.');e.status=429;e.retryAt=until;throw e;}
+ const ac=new AbortController(),cancel=()=>ac.abort();let timedOut=false,transportFailure=false;
+ const transport=async operation=>{try{return await operation();}catch(e){if(e instanceof TypeError||e.message==='Failed to fetch')transportFailure=true;throw e;}};
  if(signal?.aborted)throw new DOMException('Cancelled','AbortError');signal?.addEventListener('abort',cancel,{once:true});
  const timer=setTimeout(()=>{timedOut=true;ac.abort();},timeout);
  try{
-  const r=await fetch(url,{signal:ac.signal,cache:cacheMode,credentials:'omit',referrerPolicy:'no-referrer',redirect:'error'});
+  const r=await transport(()=>fetch(url,{signal:ac.signal,cache:cacheMode,credentials:'omit',referrerPolicy:'no-referrer',redirect:'error'}));
   if(!r.ok){
-   if(r.status===429){const retry=r.headers.get('Retry-After');const seconds=Number(retry);const delay=retry?(Number.isFinite(seconds)?seconds*1000:Date.parse(retry)-Date.now()):60000;backoffs.set(host,Date.now()+Math.max(60000,Math.min(3600000,Number.isFinite(delay)?delay:60000)));}
-   const e=Error(r.status===429?'The free data source is rate-limiting requests; requests are paused briefly.':r.status===451?'The data source is unavailable in this region.':'Data source returned HTTP '+r.status+'.');e.status=r.status;throw e;
+   const retry=r.headers.get('Retry-After');let retryAt=0;
+   if(r.status===429||(r.status===503&&retry)){
+    const now=Date.now(),seconds=retry&&/^\d+(?:\.\d+)?$/.test(retry.trim())?Number(retry):NaN;
+    const target=Number.isFinite(seconds)?now+Math.ceil(seconds*1000):Date.parse(retry||'');
+    retryAt=Math.max(now+60000,Number.isSafeInteger(target)&&target<=8640000000000000?target:now+60000);
+    backoffs.set(host,Math.max(backoffs.get(host)||0,retryAt));
+   }
+   const e=Error(r.status===429?'The free data source is rate-limiting requests; requests are paused briefly.':r.status===451?'The data source is unavailable in this region.':'Data source returned HTTP '+r.status+'.');e.status=r.status;e.transient=[408,500,502,503,504].includes(r.status)&&!retryAt;if(retryAt)e.retryAt=retryAt;throw e;
   }
   const type=r.headers.get('Content-Type')||'';
   if(!/\bapplication\/(?:[\w.+-]+\+)?json\b/i.test(type))throw Error('The source did not return JSON.');
   const declared=Number(r.headers.get('Content-Length'));
   if(Number.isFinite(declared)&&declared>MAX_JSON_BYTES)throw Error('The source response exceeded the safe size limit.');
   let text;
-  if(r.body?.getReader){const reader=r.body.getReader(),parts=[];let bytes=0;const decoder=new TextDecoder('utf-8',{fatal:true});try{while(true){const{done,value}=await reader.read();if(done)break;bytes+=value.byteLength;if(bytes>MAX_JSON_BYTES){ac.abort();throw Error('The source response exceeded the safe size limit.');}parts.push(decoder.decode(value,{stream:true}));}parts.push(decoder.decode());text=parts.join('');}finally{reader.releaseLock();}}
-  else{text=await r.text();if(new TextEncoder().encode(text).length>MAX_JSON_BYTES)throw Error('The source response exceeded the safe size limit.');}
+  if(r.body?.getReader){const reader=r.body.getReader(),parts=[];let bytes=0;const decoder=new TextDecoder('utf-8',{fatal:true});try{while(true){const{done,value}=await transport(()=>reader.read());if(done)break;bytes+=value.byteLength;if(bytes>MAX_JSON_BYTES){ac.abort();throw Error('The source response exceeded the safe size limit.');}parts.push(decoder.decode(value,{stream:true}));}parts.push(decoder.decode());text=parts.join('');}finally{reader.releaseLock();}}
+  else{text=await transport(()=>r.text());if(new TextEncoder().encode(text).length>MAX_JSON_BYTES)throw Error('The source response exceeded the safe size limit.');}
   try{return JSON.parse(text);}catch(_){throw Error('The source returned invalid JSON.');}
- }catch(e){if(timedOut)throw Error('The data source did not respond in time.');if(e.name==='AbortError')throw e;if(e.message==='Failed to fetch'||e instanceof TypeError)throw Error('The browser could not reach the data source.');throw e;}
+ }catch(e){if(signal?.aborted)throw new DOMException('Cancelled','AbortError');if(timedOut)throw Object.assign(Error('The data source did not respond in time.'),{transient:true});if(e.name==='AbortError')throw e;if(transportFailure)throw Object.assign(Error('The browser could not reach the data source.'),{transient:true});if(e instanceof TypeError)throw Error('The source returned an unreadable response.');throw e;}
  finally{clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
 }
 async function getJSON(path,signal){
@@ -270,7 +285,8 @@ function preferPreparedBundle(candidate,current,selected=ids){
  if(!validBundle(current))return true;
  if(candidate.spec.range!==current.spec.range||candidate.savedAt<=current.savedAt)return false;
  const before=new Map(current.data),after=new Map(candidate.data);
- return selected.filter(id=>before.has(id)).every(id=>after.has(id)&&after.get(id).points.at(-1).t>=before.get(id).points.at(-1).t);
+ const report=current.spec.quoteRefresh,unresolved=[...(Array.isArray(report?.retainedIds)?report.retainedIds:[]),...(Array.isArray(report?.failedIds)?report.failedIds:[])];
+ return selected.filter(id=>before.has(id)).every(id=>after.has(id)&&(unresolved.includes(id)?after.get(id).points.at(-1).t>before.get(id).points.at(-1).t:after.get(id).points.at(-1).t>=before.get(id).points.at(-1).t));
 }
 let snapshotRequest=null,snapshotValue=null,snapshotCheckedAt=0;
 async function getPreparedSnapshot(force=false){
@@ -287,12 +303,20 @@ async function getPreparedSnapshot(force=false){
  return snapshotRequest;
 }
 function showSnapshotStatus(bundle){
- if(bundle.spec.quoteCheckedAt){
-  const available=new Map(bundle.data),times=state.coins.map(id=>available.get(id)?.points.at(-1)?.t);
-  const observedAt=times.length&&times.every(Number.isSafeInteger)?Math.min(...times):null,now=Date.now();
-  const fresh=observedAt!==null&&observedAt<=now+300000&&now-observedAt<=1800000;
+ const available=new Map(bundle.data),times=state.coins.map(id=>available.get(id)?.points.at(-1)?.t),report=bundle.spec.quoteRefresh;
+ const observedAt=times.length&&times.every(Number.isSafeInteger)?Math.min(...times):null,now=Date.now();
+ const fresh=observedAt!==null&&observedAt<=now+300000&&now-observedAt<=1800000;
+ const failed=state.coins.filter(id=>Array.isArray(report?.failedIds)&&report.failedIds.includes(id));
+ const retained=state.coins.filter(id=>Array.isArray(report?.retainedIds)&&report.retainedIds.includes(id));
+ if(failed.length){
+  const chartFailure=report.phase==='chart';
+  setStatus('failed',(chartFailure?'Chart update unavailable':'Update unavailable')+' · prices from '+dateText(observedAt??bundle.spec.end)+' '+zoneLabel());
+  $('warning').hidden=false;$('warning').textContent=chartFailure?'This chart could not be updated. '+(report.failureMessage||'Choose another period or try Refresh prices.')+' The last verified chart is still available.':'Could not check for newer prices for '+failed.join(', ')+'. The last verified chart is still available.'+(fresh?'':' These saved observations are no longer current.')+' Refresh prices to try again.';return;
+ }
+ if(bundle.spec.quoteCheckedAt||retained.length){
   setStatus(fresh?'ready':'failed',(fresh?'Quotes updated':'Older quotes')+' · '+dateText(observedAt??bundle.spec.end)+' '+zoneLabel());
   if(!fresh){$('warning').hidden=false;$('warning').textContent='These saved quotes are no longer current. Refresh prices checks for quotes from the last 30 minutes.';return;}
+  if(retained.length){setStatus('failed','Saved quotes · '+dateText(observedAt)+' '+zoneLabel());$('warning').hidden=false;$('warning').textContent='Could not check for newer prices for '+retained.join(', ')+'. Showing the latest verified saved observations, dated above. Refresh prices to try again.';return;}
   const delayed=state.coins.filter(id=>now-(available.get(id)?.historySavedAt||bundle.spec.historySavedAt)>7200000);const old=delayed.length>0;$('warning').hidden=!old;$('warning').textContent=old?'Current prices updated. Chart history is delayed for '+delayed.join(', ')+'. Successful history repairs are kept; missing observations remain gaps. Refresh prices retries the remaining history.':'';return;
  }
  const visible=new Map(bundle.data),observations=state.coins.map(id=>visible.get(id)?.points.at(-1)?.t);
@@ -330,24 +354,49 @@ async function repairChartHistory(bundle,wanted,signal){
 
 function validCurrentQuotes(raw,wanted,now=Date.now()){
  const quotes=new Map();
- for(const id of wanted){const value=raw?.[CG_IDS[id]],p=value?.usd,t=value?.last_updated_at*1000;if(typeof p!=='number'||!Number.isFinite(p)||p<=0||!Number.isSafeInteger(t)||t>now+300000||now-t>1800000)throw Error('A current, timestamped quote was not returned for '+id+'.');quotes.set(id,{t,p});}
+ for(const id of wanted){const value=raw?.[CG_IDS[id]],p=value?.usd,t=value?.last_updated_at*1000;if(!validQuoteObservation(p,t,now))throw Error('A current, timestamped quote was not returned for '+id+'.');quotes.set(id,{t,p});}
  return quotes;
 }
-async function fetchCurrentQuotes(wanted,signal){
+function validQuoteObservation(p,t,now=Date.now()){return typeof p==='number'&&Number.isFinite(p)&&p>0&&Number.isSafeInteger(t)&&t>0&&t<=now+300000&&now-t<=1800000;}
+function retryableQuoteError(error){
+ if(!error||error.rateLimited||error.retryAt>Date.now()||(error.status===503&&error.retryAfter))return false;
+ return error.status===undefined?error.transient===true:[408,500,502,503,504].includes(error.status);
+}
+async function fetchCurrentQuotes(wanted,signal,retainedBundles=[]){
  const q=new URLSearchParams({ids:wanted.map(id=>CG_IDS[id]).join(','),vs_currencies:'usd',include_last_updated_at:'true',precision:'full'});
- const combined={},merge=raw=>{for(const id of wanted){const key=CG_IDS[id];try{validCurrentQuotes(raw,[id]);const value=raw[key];if(!combined[key]||value.last_updated_at>combined[key].last_updated_at)combined[key]=value;}catch{}}};
+ const origin='https://api.coingecko.com',url=origin+'/api/v3/simple/price?'+q,combined=new Map();
+ const missing=()=>wanted.filter(id=>{const value=combined.get(id);return !value||!validQuoteObservation(value.p,value.t);});
+ const merge=raw=>{for(const id of wanted){try{const value=validCurrentQuotes(raw,[id]).get(id);if(!combined.has(id)||value.t>combined.get(id).t)combined.set(id,value);}catch{}}};
  let primaryError;
- try{merge(await requestJSON('https://api.coingecko.com/api/v3/simple/price?'+q,signal,8000));}
+ if(signal.aborted)throw new DOMException('Cancelled','AbortError');
+ try{merge(await requestJSON(url,signal,8000));}
  catch(e){if(signal.aborted)throw e;primaryError=e;}
- if(wanted.some(id=>!combined[CG_IDS[id]])){
+ if(missing().length){
   try{const fallback=await requestJSON(new URL('./data/quotes.json',location.href).href,signal,4000,'reload');if(fallback?.version!==1||!fallback.quotes)throw Error('Invalid quote cache');merge(fallback.quotes);}
-  catch(e){if(signal.aborted)throw e;primaryError=primaryError||e;}
+  catch(e){if(signal.aborted)throw e;}
+ }
+ // At most one further primary request, after the published cache has been tried.
+ // Malformed data and explicit provider pauses never trigger an automatic retry.
+ if(missing().length&&retryableQuoteError(primaryError)&&Date.now()>=(backoffs.get(origin)||0)){
+  if(signal.aborted)throw new DOMException('Cancelled','AbortError');
+  try{merge(await requestJSON(url,signal,8000));}catch(e){if(signal.aborted)throw e;primaryError=e;}
  }
  if(signal.aborted)throw new DOMException('Cancelled','AbortError');
- try{return validCurrentQuotes(combined,wanted);}
- catch{throw Error('Fresh quotes unavailable for '+wanted.filter(id=>!combined[CG_IDS[id]]).join(', ')+'. '+(primaryError?.message||'The last verified chart is retained.'));}
+ const retained=new Set();
+ // Only already validated aggregate USD observations may fill missing coins or
+ // protect a newer local observation. Preserve their original millisecond clock.
+ for(const bundle of retainedBundles){
+  if(!validBundle(bundle)||!['CoinGecko live','CoinGecko'].includes(bundle.spec.source)||bundle.spec.currency!=='USD')continue;
+  for(const [id,d]of bundle.data){if(!wanted.includes(id))continue;const last=d.points.at(-1);if(!validQuoteObservation(last.p,last.t))continue;
+   if(!combined.has(id)||last.t>combined.get(id).t){combined.set(id,{t:last.t,p:last.p});retained.add(id);}
+  }
+ }
+ const unavailable=missing();
+ if(unavailable.length)throw Error('Fresh quotes unavailable for '+unavailable.join(', ')+'. '+(primaryError?.message||'The last verified chart is retained.'));
+ const retainedIds=wanted.filter(id=>retained.has(id));
+ return {quotes:new Map(wanted.map(id=>[id,combined.get(id)])),retainedIds,attemptedAt:Date.now(),failureMessage:retainedIds.length?(primaryError?.message||'The source did not return newer verified observations.'):null};
 }
-function applyCurrentQuotes(bundle,quotes){
+function applyCurrentQuotes(bundle,quotes,refresh){
  const now=Date.now();
  const end=Math.max(bundle.spec.end,...[...quotes.values()].map(x=>x.t)),step=bundle.spec.step,range=bundle.spec.range;
  const desired=range==='1D'?end-86400000:range==='5D'?end-5*86400000:range==='1M'?calendarSubtract(end,1):range==='6M'?calendarSubtract(end,6):range==='1Y'?calendarSubtract(end,12):Date.UTC(new Date(end).getUTCFullYear(),0,1);
@@ -358,9 +407,18 @@ function applyCurrentQuotes(bundle,quotes){
   if(quote.t>points.at(-1).t){const gapBefore=quote.t-points.at(-1).t>step*1.5;if(gapBefore)gaps++;points.push({t:quote.t,p:quote.p,r:(quote.p/base-1)*100,...(gapBefore?{gapBefore:true}:{})});}
   data.push([id,{id,base,points,gaps,asOf:now,historySavedAt:d.historySavedAt||bundle.spec.historySavedAt||bundle.savedAt,historyObservedAt:d.historyObservedAt}]);
  }
- const next={spec:{...bundle.spec,start,end,quoteCheckedAt:now,historySavedAt:bundle.spec.historySavedAt||bundle.savedAt,saved:false},data,savedAt:now};
+ const retainedIds=refresh?.retainedIds||[],retrieved=[...quotes.keys()].some(id=>!retainedIds.includes(id));
+ const quoteRefresh={state:retainedIds.length?'saved':'updated',phase:'quotes',retainedIds:retainedIds.slice(),failedIds:[],attemptedAt:refresh?.attemptedAt||now,failureMessage:refresh?.failureMessage?String(refresh.failureMessage).slice(0,300):null};
+ const next={spec:{...bundle.spec,start,end,quoteCheckedAt:retrieved?quoteRefresh.attemptedAt:bundle.spec.quoteCheckedAt,quoteRefresh,historySavedAt:bundle.spec.historySavedAt||bundle.savedAt,saved:false},data,savedAt:retrieved?now:bundle.savedAt};
  if(!validBundle(next))throw Error('The refreshed quotes did not pass the chart data checks.');
  bundles.set(range,next);storageWrite('range:'+range,next);return next;
+}
+function rememberQuoteFailure(bundle,wanted,error,phase='quotes'){
+ const previous=bundle.spec.quoteRefresh,retainedIds=Array.isArray(previous?.retainedIds)?previous.retainedIds.filter(id=>ids.includes(id)&&!wanted.includes(id)):[];
+ const failedIds=[...new Set([...(Array.isArray(previous?.failedIds)?previous.failedIds.filter(id=>ids.includes(id)):[]),...wanted])];
+ const next={...bundle,spec:{...bundle.spec,quoteRefresh:{state:'failed',phase,retainedIds,failedIds,attemptedAt:Date.now(),failureMessage:String(error?.message||'The latest price check failed.').slice(0,300)}}};
+ if(validBundle(next)){bundles.set(next.spec.range,next);storageWrite('range:'+next.spec.range,next);return next;}
+ return bundle;
 }
 async function load(force=false){
  const run=++serial;controller?.abort();controller=new AbortController();const signal=controller.signal;
@@ -375,7 +433,7 @@ async function load(force=false){
   // Draw the embedded/local chart before any request; never wait for a remote clock or multiple provider requests.
   if(hasFallback)showSnapshotStatus(cached);
   setBusy(force||!hasFallback);if(force)setStatus('loading','Checking prices…');
-  let fallbackBundle=hasFallback?cached:null,quotesReceived=false;
+  let fallbackBundle=hasFallback?cached:null,failurePhase='chart';
   if(!hasFallback)setStatus('loading','Loading the shared price snapshot…');
   try{
    if(range==='5Y')throw Error('Free history for Kishu Inu, Wiki Cat and CREPE covers up to one year. Deselect those tokens for five-year charts of Bitcoin, Ethereum, BNB, XRP, Solana and Shiba Inu.');
@@ -394,22 +452,23 @@ async function load(force=false){
    if(force){
     // Current prices take priority over optional historical-provider requests.
     setStatus('loading','Checking current quotes…');
-    const quotes=await fetchCurrentQuotes(wanted,signal);
+    failurePhase='quotes';
+    const refresh=await fetchCurrentQuotes(wanted,signal,[fallbackBundle,b]);
     if(run!==serial||signal.aborted)return;
-    quotesReceived=true;
-    for(const [id,d]of fallbackBundle?.data||[]){const last=d.points.at(-1),incoming=quotes.get(id);if(incoming&&last.t>incoming.t&&last.t<=Date.now()+300000&&Date.now()-last.t<=1800000)quotes.set(id,{t:last.t,p:last.p});}
+    failurePhase='chart';
+    const quotes=refresh.quotes;
     let applied=false,applicationError;
-    try{b=applyCurrentQuotes(b,quotes);showBundle(b,false);fallbackBundle=b;showSnapshotStatus(b);applied=true;}catch(e){applicationError=e;}
+    try{b=applyCurrentQuotes(b,quotes,refresh);showBundle(b,false);fallbackBundle=b;showSnapshotStatus(b);applied=true;}catch(e){applicationError=e;}
     if(!applied)setStatus('loading','Updating chart history…');
     try{
      const repaired=await repairChartHistory(b,wanted,signal);
      if(run!==serial||signal.aborted)return;
-     if(repaired!==b){b=applyCurrentQuotes(repaired,quotes);showBundle(b,false);fallbackBundle=b;applied=true;}
+     if(repaired!==b){b=applyCurrentQuotes(repaired,quotes,refresh);showBundle(b,false);fallbackBundle=b;applied=true;}
     }catch(e){if(signal.aborted)throw e;if(!applied)throw applicationError||e;}
     if(!applied)throw applicationError;
    }
    showSnapshotStatus(b);
-  }catch(e){if(run!==serial||signal.aborted)return;state.errors=[e.message];if(fallbackBundle){showBundle(fallbackBundle,false);showSnapshotStatus(fallbackBundle);$('warning').hidden=false;$('warning').textContent=(quotesReceived?'Current quotes were received, but could not be added to this period. ':'Current quotes could not be checked. ')+e.message+' The existing chart is still available.';}else{setStatus('failed','Snapshot unavailable');$('overlay-title').textContent='This period could not be loaded';$('overlay-body').textContent=e.message+' Try Refresh prices.';$('dates').textContent='No other period has been substituted.';}}
+  }catch(e){if(run!==serial||signal.aborted)return;state.errors=[e.message];if(fallbackBundle){fallbackBundle=rememberQuoteFailure(fallbackBundle,wanted,e,failurePhase);showBundle(fallbackBundle,false);showSnapshotStatus(fallbackBundle);}else{setStatus('failed','Snapshot unavailable');$('overlay-title').textContent='This period could not be loaded';$('overlay-body').textContent=e.message+' Try Refresh prices.';$('dates').textContent='No other period has been substituted.';}}
   finally{if(run===serial){setBusy(false);lastPricesCheck=Date.now();}}
   return;
  }
