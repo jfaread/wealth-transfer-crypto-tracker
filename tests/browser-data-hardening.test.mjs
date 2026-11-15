@@ -20,9 +20,9 @@ test('partial live data and partial cache can form one complete, timestamp-valid
  const get=quoteEnv(async url=>{calls++;return url.includes('simple/price')?live:{version:1,quotes:cache};});
  const result=await get(['BTC','ETH','SHIB'],new AbortController().signal);assert.equal(result.quotes.size,3);assert.equal(result.quotes.get('BTC').p,10);assert.equal(result.quotes.get('SHIB').p,.000004);assert.equal(calls,2);assert.deepEqual(Array.from(result.retainedIds),[]);
 });
-test('older fallback observations cannot replace valid newer primary prices',async()=>{
- const get=quoteEnv(async url=>url.includes('simple/price')?{bitcoin:q(10)}:{version:1,quotes:{bitcoin:q(5,now-60000),ethereum:q(20)}});
- const result=await get(['BTC','ETH'],new AbortController().signal);assert.equal(result.quotes.get('BTC').p,10);
+test('newer provider observations replace older published observations when another coin requires a provider request',async()=>{
+ const get=quoteEnv(async url=>url.includes('simple/price')?{bitcoin:q(10),ethereum:q(20)}:{version:1,quotes:{bitcoin:q(5,now-60000)}});
+ const result=await get(['BTC','ETH'],new AbortController().signal);assert.equal(result.quotes.get('BTC').p,10);assert.equal(result.quotes.get('ETH').p,20);
 });
 test('a complete verified published response avoids an unnecessary provider request',async()=>{
  let count=0;const result=await quoteEnv(async()=>{count++;return {version:1,quotes:{bitcoin:q(10)}};})(['BTC'],new AbortController().signal);assert.equal(count,1);assert.equal(result.quotes.get('BTC').p,10);assert.equal(result.failureMessage,null);
