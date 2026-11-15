@@ -15,7 +15,7 @@ export function alertApiOrigin(config){
 export function applySiteCsp(html,config){
  const origin=alertApiOrigin(config);
  const hashes=[...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)].filter(([,attrs])=>!(/\bsrc\s*=/.test(attrs)||/type\s*=\s*["']application\/json["']/.test(attrs))).map(([, ,source])=>"'sha256-"+createHash('sha256').update(source).digest('base64')+"'");
- const policy="default-src 'none'; script-src 'self' "+hashes.join(' ')+"; style-src 'self' 'unsafe-inline'; connect-src 'self' https://data-api.binance.vision https://api.rss2json.com https://api.coingecko.com"+(origin?' '+origin:'')+"; img-src 'self' data:; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'";
+ const policy="default-src 'none'; script-src 'self' "+hashes.join(' ')+"; style-src 'self' 'unsafe-inline'; connect-src 'self' https://data-api.binance.vision https://api.rss2json.com https://api.coingecko.com"+(origin?' '+origin:'')+"; img-src 'self' data:; media-src 'self'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'";
  if(!/<meta http-equiv="Content-Security-Policy"/.test(html))throw Error('Missing site content security policy');
  return html.replace(/(<meta http-equiv="Content-Security-Policy" content=")[^"]*("\s*\/?>)/,(_,a,b)=>a+policy+b);
 }
