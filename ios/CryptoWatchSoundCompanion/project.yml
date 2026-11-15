@@ -1,0 +1,29 @@
+name: CryptoWatchSoundCompanion
+options:
+  bundleIdPrefix: com.jfaread
+  deploymentTarget:
+    iOS: "16.4"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.4"
+targets:
+  CryptoWatchSoundCompanion:
+    type: application
+    platform: iOS
+    sources:
+      - path: CryptoWatchSoundCompanion
+      - path: Resources
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jfaread.cryptowatch.sound
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Crypto-Watch Alerts
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        CODE_SIGN_STYLE: Automatic
+    scheme:
+      testTargets: []

@@ -1,0 +1,28 @@
+name: Verify native XRP sound companion
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/ios-native-xrp-sound]
+    paths:
+      - 'ios/CryptoWatchSoundCompanion/**'
+      - '.github/workflows/verify-native-xrp-sound.yml'
+permissions:
+  contents: read
+jobs:
+  ios-simulator-build:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: ios/CryptoWatchSoundCompanion
+        run: xcodegen generate
+      - name: Compile without signing or installing
+        working-directory: ios/CryptoWatchSoundCompanion
+        run: |
+          xcodebuild -project CryptoWatchSoundCompanion.xcodeproj \
+            -scheme CryptoWatchSoundCompanion -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO build
