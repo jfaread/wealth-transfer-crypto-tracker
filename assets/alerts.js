@@ -126,6 +126,66 @@
     if (!expired) pageAlertExpiry = setTimeout(renderPageAlert, Math.max(1, Math.min(300000, pageAlert.expiresAt - Date.now())));
   }
 
+  // Optional local clip: never uploaded, fetched from third parties or stored in the public repository.
+  // Browsers may block playback when the document is backgrounded or not user-activated.
+  let xrpClip = null, xrpClipUrl = null, xrpAudioArmed = false;
+  function qualifyingXrpEvent(title, body) {
+    return /^XRP(?: price)? alert$/i.test(title) &&
+      /^XRP crossed below \$(?:0\.9(?:0)?|0\.8(?:0)?|0\.7(?:0)?)\.(?:\s|$)/.test(body);
+  }
+  function xrpSoundStatus(message) {
+    const node = $('wa-xrp-sound-status');
+    if (node) node.textContent = message;
+  }
+  async function playXrpClip() {
+    if (!xrpAudioArmed || !xrpClip || document.hidden) return;
+    try {
+      xrpClip.pause();
+      xrpClip.currentTime = 0;
+      await xrpClip.play();
+      xrpSoundStatus('XRP sound played in this open tab.');
+    } catch (_) {
+      xrpSoundStatus('Automatic audio was blocked by this browser. Re-arm sound with the Preview button.');
+    }
+  }
+  const xrpPicker = $('wa-xrp-clip');
+  xrpPicker?.addEventListener('change', () => {
+    const file = xrpPicker.files?.[0];
+    if (xrpClip) { xrpClip.pause(); xrpClip.removeAttribute('src'); xrpClip.load(); }
+    if (xrpClipUrl) URL.revokeObjectURL(xrpClipUrl);
+    xrpAudioArmed = false; xrpClipUrl = null; xrpClip = null;
+    if (!file) { xrpSoundStatus('No clip selected.'); return; }
+    if (!['audio/mpeg','audio/mp4','audio/wav','audio/x-wav','audio/ogg'].includes(file.type) ||
+        file.size < 100 || file.size > 4 * 1024 * 1024) {
+      xrpPicker.value = '';
+      xrpSoundStatus('Select an MP3, M4A, WAV or OGG clip no larger than 4 MB.');
+      return;
+    }
+    xrpClipUrl = URL.createObjectURL(file);
+    xrpClip = new Audio(xrpClipUrl);
+    xrpClip.preload = 'auto';
+    xrpClip.volume = 0.7;
+    xrpSoundStatus('Clip ready. Tap Preview and arm sound to enable playback in this open tab.');
+  });
+  $('wa-xrp-preview')?.addEventListener('click', async () => {
+    if (!xrpClip) { xrpSoundStatus('Select an authorised sound clip first.'); return; }
+    xrpAudioArmed = true;
+    try {
+      xrpClip.pause(); xrpClip.currentTime = 0;
+      await xrpClip.play();
+      xrpSoundStatus('Sound armed for XRP crosses below $0.90, $0.80 or $0.70 while this tab stays open.');
+    } catch (_) {
+      xrpAudioArmed = false;
+      xrpSoundStatus('Audio permission blocked playback. Try tapping Preview again.');
+    }
+  });
+  $('wa-xrp-mute')?.addEventListener('click', () => {
+    xrpAudioArmed = false;
+    xrpClip?.pause();
+    xrpSoundStatus('Automatic XRP sound is off.');
+  });
+  window.addEventListener('pagehide', () => { xrpAudioArmed = false; xrpClip?.pause(); });
+
   function receivePageAlert(event) {
     // A message from another page or another repository's worker is not an alert.
     if (event.source?.scriptURL !== new URL('sw.js', project).href || (event.origin && event.origin !== project.origin)) return;
@@ -143,7 +203,9 @@
     if (!title || !body) return;
     seenPageAlerts.add(value.eventId);
     if (seenPageAlerts.size > 100) seenPageAlerts.delete(seenPageAlerts.values().next().value);
-    pageAlert = { eventId: value.eventId, title, body, observedAt: value.observedAt, expiresAt: value.expiresAt, expired: value.expired };
+    const xrpCrossed = !value.expired && value.expiresAt > now && qualifyingXrpEvent(title, body);
+    pageAlert = { eventId: value.eventId, title: xrpCrossed ? 'XRP Alert' : title, body, observedAt: value.observedAt, expiresAt: value.expiresAt, expired: value.expired };
+    if (xrpCrossed) void playXrpClip();
     const banner = $('wtct-alert-banner');
     if (!banner) return;
     banner.hidden = false;
