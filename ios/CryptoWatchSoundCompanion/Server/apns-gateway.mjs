@@ -64,7 +64,7 @@ export async function sendNativeXrpAPNs({
  fetchImpl=fetch,subtle=crypto.subtle,now=Date.now(),timeoutMs=10000
 }={}){
  const prepared=nativeXrpNotification(event,now);
- need(token,/^(?:[a-fA-F0-9]{2}){32,128}$/,'APNs token');
+ need(token,/^(?:[a-fA-F0-9]{2}){16,512}$/,'APNs token');
  need(bundleId,/^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/,'bundle ID');
  if(!['production','sandbox'].includes(environment))throw Error('Invalid APNs environment');
  if(typeof fetchImpl!=='function')throw Error('Invalid APNs transport');
