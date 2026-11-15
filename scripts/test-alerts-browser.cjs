@@ -8,7 +8,7 @@ const KEY='wtct-alerts-v1';
 const IDS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
 const DEVICE='cb54d1cb-2489-4472-a6ce-d0959789a956';
 const TOKEN=DEVICE+'.'+'1'.repeat(64); // Deliberately synthetic; no live account exists.
-const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.json':'application/json','.webmanifest':'application/manifest+json','.png':'image/png','.svg':'image/svg+xml'};
+const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.json':'application/json','.webmanifest':'application/manifest+json','.png':'image/png','.svg':'image/svg+xml','.wav':'audio/wav'};
 
 (async()=>{
  const {applySiteCsp}=await import('../scripts/build-site.mjs');
@@ -115,6 +115,46 @@ const TYPES={'.html':'text/html','.js':'text/javascript','.css':'text/css','.jso
    console.log(`PASS: inactive draft, exact tiny decimal, no permission prompt, keyboard focus and layout at ${width}px.`);
    await context.close();
   }
+
+  // The XRP clip is an original, self-hosted WAV. Real browser playback must
+  // start directly from Test sound, not from a delayed WebAudio resume().
+  const sound = await fs.readFile('_site/assets/xrp-alert.wav');
+  assert.equal(sound.toString('ascii',0,4),'RIFF');
+  assert.equal(sound.toString('ascii',8,12),'WAVE');
+  assert(sound.length>1024&&sound.length<100000,'Alert must be short and self-hosted');
+  assert(html.includes('id="wa-xrp-player"'),'Missing built-in sound player');
+  const soundCtx=await browser.newContext({viewport:{width:390,height:844},reducedMotion:'reduce'});
+  await mockBrowser(soundCtx);await mount(soundCtx);
+  const soundPage=await soundCtx.newPage(),soundErrors=[];
+  soundPage.on('pageerror',error=>soundErrors.push(error.message));
+  await open(soundPage);
+  assert.equal(await soundPage.locator('#wa-xrp-clip').count(),0,'iPhone users must not choose files');
+  await soundPage.evaluate(()=>{
+    const player=document.querySelector('#wa-xrp-player'),original=player.play.bind(player);
+    window.__soundCalls=0;
+    player.play=function(){window.__soundCalls++;return original();};
+  });
+  await soundPage.locator('#wa-xrp-preview').click();
+  await soundPage.getByText(/Test sound started/).waitFor({timeout:6000});
+  assert.equal(await soundPage.evaluate(()=>window.__soundCalls),1,'single tap should start HTML media');
+  assert.equal(await soundPage.locator('#wa-xrp-player').evaluate(x=>x.error),null,'WAV must load');
+  await soundPage.locator('#wa-xrp-mute').click();
+  const validXrp={type:'wtct-price-alert',version:1,eventId:'sound-xrp-90',title:'XRP price alert',body:'XRP crossed below $0.90. Observed $0.899 on Kraken XRP/USD.',url:SITE,observedAt:Date.now(),expiresAt:Date.now()+120000,expired:false};
+  const deliver=message=>soundPage.evaluate(({message,site})=>window.__alertListeners.message({source:{scriptURL:site+'sw.js'},data:message}),{message,site:SITE});
+  await deliver(validXrp);
+  assert.equal(await soundPage.evaluate(()=>window.__soundCalls),1,'muting must suppress automatic playback');
+  assert.equal(await soundPage.locator('#wa-banner-title').innerText(),'XRP Alert');
+  await soundPage.locator('#wa-xrp-mute').click();
+  await deliver({...validXrp,eventId:'sound-xrp-80',body:'XRP crossed below $0.80. Observed $0.799 on Kraken XRP/USD.'});
+  await soundPage.waitForFunction(()=>window.__soundCalls===2);
+  await deliver({...validXrp,eventId:'sound-other',title:'BTC price alert',body:'BTC crossed below $0.90. Observed $0.80 on Kraken BTC/USD.'});
+  await deliver({...validXrp,eventId:'sound-unknown',body:'XRP crossed below $0.85. Observed $0.84 on Kraken XRP/USD.'});
+  assert.equal(await soundPage.evaluate(()=>window.__soundCalls),2,'other assets and thresholds must stay silent');
+  await soundPage.reload({waitUntil:'domcontentloaded'});
+  assert.match(await soundPage.locator('#wa-xrp-sound-status').innerText(),/sound is enabled/);
+  assert.deepEqual(soundErrors,[]);
+  console.log('PASS: self-hosted WAV on one tap; XRP trigger, mute, specificity and no file picker.');
+  await soundCtx.close();
 
   // The first enrolment can start a previously idle feed. Draft activation must
   // use its refreshed capabilities, without requiring a separate Check service.
