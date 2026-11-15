@@ -23,6 +23,11 @@ targets:
       SystemCapabilities:
         com.apple.Push:
           enabled: 1
+    # XcodeGen generates entitlements; no signing identity is kept in Git.
+    entitlements:
+      path: CryptoWatchSoundCompanion/Push.entitlements
+      properties:
+        aps-environment: "$(APNS_ENVIRONMENT)"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jfaread.cryptowatch.sound
@@ -31,5 +36,10 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         CODE_SIGN_STYLE: Automatic
+      configs:
+        Debug:
+          APNS_ENVIRONMENT: development
+        Release:
+          APNS_ENVIRONMENT: production
     scheme:
       testTargets: []
