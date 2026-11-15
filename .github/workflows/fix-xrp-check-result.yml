@@ -22,90 +22,31 @@ jobs:
       WRANGLER_SEND_METRICS: 'false'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '26.13.1'
           cache: npm
       - run: npm ci --ignore-scripts
-      - name: Reproduce the false failure and apply an exact guarded correction
+      - name: Reproduce and apply the pinned reviewed fix with precise observation assertions
         run: |
           node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import {execFileSync,spawnSync} from 'node:child_process';
-          for(const [file,sha] of Object.entries({
-            'index.html':'f46db7c78cdfdb37767274e83de211d368f708a0',
-            'tests/browser-data-hardening.test.mjs':'9964a876cfc6d5ecd36efae5a28d538df2c3d8c5',
-            'scripts/test-fast-load.cjs':'a38aff1d9cb0baa1444d1a68ddbbabc154161de2'
-          }))if(execFileSync('git',['hash-object',file],{encoding:'utf8'}).trim()!==sha)throw Error('Source changed; refusing to overwrite '+file);
-          const tests=`
-          test('successful XRP response must not be called a failed check just because local data is newer',async()=>{
-            const saved=retainedBundle({XRP:[1.25,now-5000]});let calls=0;
-            const result=await quoteEnv(async()=>{calls++;return {ripple:q(1.24,now-15000)};})(['XRP'],new AbortController().signal,[saved]);
-            assert.deepEqual(Array.from(result.retainedIds),[],'A valid provider reply is not a failed check');
-            assert.deepEqual(Array.from(result.preservedIds),['XRP']);
-            assert.equal(result.quotes.get('XRP').t,now-5000);assert.equal(result.quotes.get('XRP').p,1.25);
-            assert.equal(result.failureMessage,null);assert.equal(calls,1);
-          });
-          test('confirmed older XRP and unavailable ETH have independent check outcomes',async()=>{
-            const saved=retainedBundle({XRP:[1.25,now-5000],ETH:[20,now-5000]});
-            const get=quoteEnv(async url=>url.includes('simple/price')?{ripple:q(1.24,now-15000)}:{version:1,quotes:{}});
-            const result=await get(['XRP','ETH'],new AbortController().signal,[saved]);
-            assert.deepEqual(Array.from(result.retainedIds),['ETH']);assert.deepEqual(Array.from(result.preservedIds),['XRP']);
-            assert.equal(result.quotes.get('XRP').t,now-5000);assert.equal(result.quotes.get('ETH').t,now-5000);
-          });
-          test('two local bundles do not turn an actual outage into a successful check',async()=>{
-            const get=quoteEnv(async()=>{throw Error('Provider unavailable');});
-            const result=await get(['XRP'],new AbortController().signal,[retainedBundle(),retainedBundle({XRP:[1.3,now-5000]})]);
-            assert.deepEqual(Array.from(result.retainedIds),['XRP']);assert.deepEqual(Array.from(result.preservedIds),[]);
-            assert.equal(result.quotes.get('XRP').t,now-5000);assert.match(result.failureMessage,/unavailable/);
-          });
-          test('preserved observation metadata is bounded, disjoint and backwards compatible',()=>{
-            const get=quoteEnv(async()=>{}),base=retainedBundle();
-            const report={state:'updated',phase:'quotes',retainedIds:[],failedIds:[],preservedIds:['XRP'],attemptedAt:now,failureMessage:null};
-            assert.equal(get.validBundle({...base,spec:{...base.spec,quoteRefresh:report}}),true);
-            for(const value of [null,'XRP',['BTC'],['XRP','XRP']])assert.equal(get.validBundle({...base,spec:{...base.spec,quoteRefresh:{...report,preservedIds:value}}}),false);
-            assert.equal(get.validBundle({...base,spec:{...base.spec,quoteRefresh:{...report,state:'saved',retainedIds:['XRP']}}}),false);
-          });
-          test('a successful check keeping newer XRP remains neutral after timezone changes and reload',()=>{
-            const warning={},statuses=[],state={coins:['XRP']};let zone='UK';
-            const context=vm.createContext({Date:Clock,Map,state,$:()=>warning,setStatus:(type,text)=>statuses.push({type,text}),dateText:t=>String(t),zoneLabel:()=>zone});
-            vm.runInContext(part('function showSnapshotStatus','async function repairChartHistory')+'\\nglobalThis.show=showSnapshotStatus;',context);
-            const bundle=retainedBundle({XRP:[1.25,now-5000]});bundle.data[0][1].historySavedAt=now;
-            bundle.spec.quoteRefresh={state:'updated',phase:'quotes',retainedIds:[],failedIds:[],preservedIds:['XRP'],attemptedAt:now,failureMessage:null};
-            context.show(bundle);assert.equal(statuses.at(-1).type,'ready');assert.match(statuses.at(-1).text,/^Prices checked/);assert.equal(warning.hidden,true);
-            zone='Eastern Time';context.show(JSON.parse(JSON.stringify(bundle)));assert.match(statuses.at(-1).text,/^Prices checked.*Eastern Time/);assert.equal(warning.hidden,true);
-          });
-          `;
-          fs.appendFileSync('tests/browser-data-hardening.test.mjs',tests);
-          const before=spawnSync(process.execPath,['--test','--test-name-pattern=successful XRP response must not','tests/browser-data-hardening.test.mjs'],{encoding:'utf8'});
-          console.log(before.stdout,before.stderr);
-          if(before.status!==1||!(before.stdout+before.stderr).includes('A valid provider reply is not a failed check'))throw Error('Expected false-failure regression was not reproduced');
-          console.log('CONFIRMED: the unmodified code wrongly marks a successful XRP reply as a failed check.');
-          function edit(file,from,to){const text=fs.readFileSync(file,'utf8');if(text.split(from).length!==2)throw Error('Expected one exact edit in '+file+': '+from.slice(0,90));fs.writeFileSync(file,text.replace(from,to));}
-          edit('index.html',"   if(r.state!=='failed'&&r.phase!=='quotes')return false;", "   if(r.state!=='failed'&&r.phase!=='quotes')return false;\n   if(r.preservedIds!==undefined&&(!validIds(r.preservedIds)||r.preservedIds.some(id=>r.retainedIds.includes(id)||r.failedIds.includes(id))))return false;");
-          edit('index.html',' const retained=new Set();',` // Separate a successful check from the timestamp chosen for display.
-           // A provider's cached reply may be older than an already verified local
-           // observation. Keep that observation without inventing a failed check.
-           const received=new Set(wanted.filter(id=>{const value=combined.get(id);return value&&validQuoteObservation(value.p,value.t);}));
-           const retained=new Set(),preserved=new Set();`);
-          edit('index.html','if(!combined.has(id)||last.t>combined.get(id).t){combined.set(id,{t:last.t,p:last.p});retained.add(id);}', 'if(!combined.has(id)||last.t>combined.get(id).t){combined.set(id,{t:last.t,p:last.p});if(received.has(id))preserved.add(id);else retained.add(id);}');
-          edit('index.html','return {quotes:new Map(wanted.map(id=>[id,combined.get(id)])),retainedIds,attemptedAt:Date.now(),', 'return {quotes:new Map(wanted.map(id=>[id,combined.get(id)])),retainedIds,preservedIds:wanted.filter(id=>preserved.has(id)),attemptedAt:Date.now(),');
-          edit('index.html',"retainedIds:retainedIds.slice(),failedIds:[],attemptedAt:refresh?.attemptedAt||now,", "retainedIds:retainedIds.slice(),failedIds:[],preservedIds:(refresh?.preservedIds||[]).slice(),attemptedAt:refresh?.attemptedAt||now,");
-          edit('index.html',"setStatus(fresh?'ready':'failed',(fresh?'Quotes updated':'Older quotes')+' · '+dateText(observedAt??bundle.spec.end)+' '+zoneLabel());", "const preserved=state.coins.some(id=>Array.isArray(report?.preservedIds)&&report.preservedIds.includes(id));\n  setStatus(fresh?'ready':'failed',(fresh?(preserved?'Prices checked':'Quotes updated'):'Older quotes')+' · '+dateText(observedAt??bundle.spec.end)+' '+zoneLabel());");
-          edit('scripts/test-fast-load.cjs',"    await route.fulfill({status:mode==='failed'?503:mode==='rate-limited'?429:200,", "    if(mode==='verified-older'){const last=new Map(settings.stored.data).get('XRP').points.at(-1);await route.fulfill({contentType:'application/json',body:JSON.stringify({ripple:{usd:last.p*0.99,last_updated_at:Math.floor((last.t-10000)/1000)}})});return;}\n    await route.fulfill({status:mode==='failed'?503:mode==='rate-limited'?429:200,");
-          edit('scripts/test-fast-load.cjs'," const xrp=await openRefreshPage({primary:'network',stored:recent,selected:['XRP']});",` // A successful but slightly older remote reply must not show an outage.
-           const checkedRecent=structuredClone(recent);for(const [,d]of checkedRecent.data)d.historySavedAt=Date.now();
-           const checkedXrp=await openRefreshPage({primary:'verified-older',stored:checkedRecent,selected:['XRP']});
-           const beforeChecked=await checkedXrp.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());
-           await checkedXrp.page.locator('#refresh').click();await waitForRefresh(checkedXrp.page);await checkedXrp.page.getByText(/^Prices checked ·/).waitFor();
-           assert.equal(checkedXrp.calls.quote,1);assert.equal(checkedXrp.calls.cache,0);assert.equal(await checkedXrp.page.locator('#status').getAttribute('class'),'status ready');assert(await checkedXrp.page.locator('#warning').isHidden());
-           const afterChecked=await checkedXrp.page.evaluate(()=>window.WealthTransferCryptoTracker.getState());assert.deepEqual(afterChecked.series[0].last,beforeChecked.series[0].last);
-           await checkedXrp.page.locator('#wtct-timezone').selectOption('America/New_York');await checkedXrp.page.reload();await checkedXrp.page.getByText(/^Prices checked ·.*Eastern Time/).waitFor();assert(await checkedXrp.page.locator('#warning').isHidden());
-           checkedXrp.settings.primary='network';await checkedXrp.page.locator('#refresh').click();await waitForRefresh(checkedXrp.page);await checkedXrp.page.getByText(/^Saved quotes ·/).waitFor();assert.match(await checkedXrp.page.locator('#warning').innerText(),/Could not check for newer prices for XRP/);
-           await fs.mkdir('qa',{recursive:true});await checkedXrp.page.screenshot({path:'qa/xrp-real-outage-retained.png',fullPage:true});await checkedXrp.page.close();
-           console.log('PASS: successful older XRP reply is not a failure; exact latest price survives reload and Eastern Time; genuine later outage is still labelled.');
-           const xrp=await openRefreshPage({primary:'network',stored:recent,selected:['XRP']});`);
-          console.log(execFileSync('git',['diff','--stat'],{encoding:'utf8'}));
+          import fs from 'node:fs';import {execFileSync} from 'node:child_process';
+          const original=execFileSync('git',['show','7257e84db582f707e0982a87f5286abba2ea5413:.github/workflows/fix-xrp-check-result.yml'],{encoding:'utf8'});
+          const match=original.match(/          node --input-type=module <<'NODE'\n([\s\S]*?)\n          NODE/);
+          if(!match)throw Error('Pinned guarded repair missing');
+          const script=match[1].split('\n').map(line=>{if(!line.startsWith('          '))throw Error('Unexpected indentation');return line.slice(10);}).join('\n');
+          execFileSync(process.execPath,['--input-type=module'],{input:script,stdio:['pipe','inherit','inherit']});
+          const file='scripts/test-fast-load.cjs',text=fs.readFileSync(file,'utf8');
+          const old='assert.deepEqual(afterChecked.series[0].last,beforeChecked.series[0].last);';
+          if(text.split(old).length!==2)throw Error('Unexpected observation assertion');
+          fs.writeFileSync(file,text.replace(old,`assert.equal(afterChecked.series[0].last.p,beforeChecked.series[0].last.p);assert.equal(afterChecked.series[0].last.t,beforeChecked.series[0].last.t);
+           // The return is relative to the newly rolled window, not the old baseline.
+           const checkedSaved=await checkedXrp.page.evaluate(()=>JSON.parse(localStorage.getItem('wtct:v3:range:1D')));
+           const checkedSeries=new Map(checkedSaved.data).get('XRP');
+           assert(Math.abs(afterChecked.series[0].last.r-(afterChecked.series[0].last.p/checkedSeries.base-1)*100)<1e-9);
+           assert.deepEqual(checkedSaved.spec.quoteRefresh.retainedIds,[]);assert.deepEqual(checkedSaved.spec.quoteRefresh.preservedIds,['XRP']);`));
           NODE
       - name: Compile and run the full regression suite
         run: |
@@ -147,4 +88,5 @@ jobs:
           path: |
             qa/*.png
             _site/data/feed-health.json
+            data/*.json
           retention-days: 7
