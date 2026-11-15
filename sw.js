@@ -72,6 +72,9 @@ self.addEventListener('push', event => {
       badge: new URL('icons/cw-192.png', PROJECT_URL).href,
       tag: 'wtct-alert-' + payload.eventId,
       renotify: false,
+      // Request the platform's normal notification sound when permitted.
+      // Web Push does not support a custom iPhone sound for closed apps.
+      silent: false,
       timestamp: payload.expired ? Date.now() : payload.observedAt,
       data: { url: payload.url, eventId: payload.eventId, expiresAt: payload.expiresAt }
     }));
