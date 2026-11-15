@@ -1,5 +1,7 @@
 /** A paced, timestamp-preserving fallback for a rate-limited Kraken WebSocket. */
 export const REST_POLL_MS = 15_000;
+// A failed streaming connection is rechecked occasionally, not at polling speed.
+export const STREAM_REPROBE_MS = 30 * 60_000;
 const COINS = Object.freeze(['BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'SHIB']);
 const ROOT = 'https://api.kraken.com/0/public/Trades';
 
@@ -46,18 +48,51 @@ async function readPacket(response) {
 export async function createKrakenRestFeed({fetchImpl = globalThis.fetch, onMessage, onClose, onOpen,
   now = () => Date.now(), schedule = setTimeout, cancel = clearTimeout,
   pace = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
-  loadCooldown = async () => 0, saveCooldown = async () => {}} = {}) {
-  let stopped = false, timer = null, controller = null, failures = 0;
+  loadCooldown = async () => 0, saveCooldown = async () => {},
+  probeStream = null, onUpgrade = null, probeIntervalMs = STREAM_REPROBE_MS,
+  loadProbeAt = async () => 0, saveProbeAt = async () => {}} = {}) {
+  let stopped = false, timer = null, controller = null, failures = 0, probeInFlight = false;
   const baseline = new Set(COINS), seen = new Map();
   const savedCooldown = await loadCooldown();
   let nextRoundAt = Number.isSafeInteger(savedCooldown) && savedCooldown > 0 ? savedCooldown : 0;
+  const probePeriod = Math.max(15 * 60_000, Math.min(24 * 60 * 60_000, Number(probeIntervalMs) || STREAM_REPROBE_MS));
+  let nextProbeAt = Infinity;
+  if (typeof probeStream === 'function' && typeof onUpgrade === 'function') {
+    let recorded = 0;
+    try { recorded = await loadProbeAt(); } catch {}
+    nextProbeAt = Number.isSafeInteger(recorded) && recorded > 0 && recorded < now() + 7 * 86_400_000
+      ? recorded : now() + probePeriod;
+    if (!recorded) try { await saveProbeAt(nextProbeAt); } catch {}
+  }
   const socket = {transport: 'rest', samplingMs: REST_POLL_MS,
     close() { stopped = true; if (timer !== null) cancel(timer); controller?.abort(); }};
   const frame = value => { if (!stopped) onMessage?.(JSON.stringify(value)); };
   const fail = () => { socket.close(); onClose?.(); };
+  function startStreamProbe() {
+    if (stopped || probeInFlight || now() < nextProbeAt || typeof probeStream !== 'function') return;
+    probeInFlight = true;
+    // Reserve the next probe before any network operation; an eviction must not
+    // cause a reconnect storm. The REST feed keeps polling during the probe.
+    nextProbeAt = now() + probePeriod;
+    Promise.resolve().then(async () => {
+      await saveProbeAt(nextProbeAt);
+      return probeStream();
+    }).then(candidate => {
+      if (!candidate?.socket || typeof candidate.activate !== 'function') return;
+      if (stopped) { try { candidate.socket.close(); } catch {} return; }
+      let approved = false;
+      try { approved = onUpgrade(candidate.socket) === true; } catch {}
+      if (approved) {
+        socket.close();   // Do not emit onClose: monitor now owns the new socket.
+        candidate.activate(); // Replays only validated, real provider frames.
+      } else try { candidate.socket.close(); } catch {}
+    }).catch(() => {/* Keep the existing timestamped REST feed. */})
+      .finally(() => { probeInFlight = false; });
+  }
   async function poll() {
     if (stopped) return;
     const started = now();
+    startStreamProbe();
     let cooldown = 0, hadError = false;
     frame({channel: 'heartbeat', transport: 'rest'});
     if (started < nextRoundAt) {
