@@ -79,3 +79,63 @@ export async function connectKraken({fetchImpl = globalThis.fetch, onMessage, on
     throw new Error('The live price connection is unavailable.');
   } finally { clearTimeout(timeout); }
 }
+
+
+/**
+ * Low-frequency recovery probe for an existing REST fallback. It never starts
+ * another REST poller. It promotes a WebSocket only after receiving a genuine,
+ * timestamp-validated Kraken ticker observation. Until activation, incoming
+ * frames stay buffered and cannot create a spurious threshold crossing.
+ */
+export async function probeKrakenStream({
+  fetchImpl = globalThis.fetch, onMessage, onClose,
+  now = () => Date.now(), schedule = setTimeout, cancel = clearTimeout,
+  timeoutMs = 9000,
+} = {}) {
+  const deadline = Math.max(1, Math.min(10000, Math.trunc(timeoutMs) || 9000));
+  return new Promise(resolve => {
+    let socket = null, settled = false, activated = false, firstValid = false;
+    const pending = [];
+    const timer = schedule(() => finish(null), deadline);
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      cancel(timer);
+      if (!result) {
+        try { socket?.close(); } catch {}
+        resolve(null);
+        return;
+      }
+      resolve({
+        socket,
+        activate() {
+          if (activated) return;
+          activated = true;
+          for (const frame of pending.splice(0)) onMessage?.(frame);
+        },
+      });
+    }
+    const options = {
+      fetchImpl, timeoutMs: deadline,
+      // A probe is not allowed to spawn a second polling transport.
+      restConnector: async () => { throw new Error('Streaming probe rate-limited'); },
+      onOpen: () => {},
+      onMessage: raw => {
+        if (settled && !firstValid) return;
+        if (activated) { onMessage?.(raw); return; }
+        const parsed = parseKrakenMessage(raw, now());
+        if (parsed.reason === 'subscription_rejected') { finish(null); return; }
+        if (!parsed.quotes.length) return;
+        firstValid = true;
+        if (pending.length < 20) pending.push(raw);
+        if (socket) finish(socket);
+      },
+      onClose: () => { if (activated) onClose?.(); else finish(null); },
+    };
+    Promise.resolve().then(() => connectKraken(options)).then(connected => {
+      socket = connected;
+      if (settled && !activated) { try {socket.close();}catch{}; return; }
+      if (firstValid) finish(socket);
+    }).catch(() => finish(null));
+  });
+}
