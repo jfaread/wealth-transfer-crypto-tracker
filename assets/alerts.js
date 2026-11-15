@@ -126,11 +126,14 @@
     if (!expired) pageAlertExpiry = setTimeout(renderPageAlert, Math.max(1, Math.min(300000, pageAlert.expiresAt - Date.now())));
   }
 
-  // Original two-tone warning generated locally; no recording or external audio is used.
-  // Automatic Web Audio requires browser permission / previous user interaction.
+  // Locally hosted original PCM WAV. HTMLMediaElement is the primary player:
+  // unlike iOS Web Audio's default ambient session, media playback is less likely
+  // to be silenced by an interrupted AudioContext. No third-party sound requests.
   const SOUND_SETTING = 'wtct:xrp-sound-muted';
-  let xrpMuted = false, xrpContext = null, lastXrpSound = 0;
+  let xrpMuted = false, lastXrpSound = 0, soundAttempt = 0;
+  const xrpPlayer = $('wa-xrp-player');
   try { xrpMuted = localStorage.getItem(SOUND_SETTING) === '1'; } catch (_) {}
+
   function qualifyingXrpEvent(title, body) {
     return /^XRP(?: price)? alert$/i.test(title) &&
       /^XRP crossed below \$(?:0\.9(?:0)?|0\.8(?:0)?|0\.7(?:0)?)\.(?:\s|$)/.test(body);
@@ -139,67 +142,80 @@
     const node = $('wa-xrp-sound-status');
     if (node) node.textContent = message;
   }
-  function unlockXrpAudio() {
-    if (xrpMuted || !window.AudioContext && !window.webkitAudioContext) return;
-    try {
-      if (!xrpContext) {
-        const AudioCtor = window.AudioContext || window.webkitAudioContext;
-        xrpContext = new AudioCtor();
-      }
-      if (xrpContext.state === 'suspended') void xrpContext.resume().catch(() => {});
-    } catch (_) {}
+  function xrpSoundReady() {
+    return !!xrpPlayer && typeof xrpPlayer.play === 'function' && xrpPlayer.error == null;
   }
-  // No file picker or setup: the first ordinary tap can unlock sound.
-  for (const type of ['pointerdown', 'touchend', 'keydown']) {
-    document.addEventListener(type, unlockXrpAudio, {passive:true});
-  }
-  function playXrpSound(force=false) {
-    if (xrpMuted || !force && document.hidden) return false;
-    unlockXrpAudio();
-    if (!xrpContext || xrpContext.state !== 'running') {
-      xrpSoundStatus('Browser audio is restricted until you interact with this page. Push notifications still work.');
+  function playXrpSound(force = false) {
+    if (xrpMuted && !force) return false;
+    if (!force && document.hidden) return false;
+    if (!xrpSoundReady()) {
+      xrpSoundStatus('The built-in sound could not be loaded. Reload Crypto-Watch and try Test sound again.');
       return false;
     }
     const now = Date.now();
     if (!force && now - lastXrpSound < 10000) return false;
     lastXrpSound = now;
-    // Two gentle rising/falling alarm sweeps, not any sampled or transcribed song.
-    const start = xrpContext.currentTime + 0.015;
-    for (let i=0; i<2; i++) {
-      const oscillator = xrpContext.createOscillator();
-      const volume = xrpContext.createGain();
-      const t = start + i * 0.45;
-      oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(460, t);
-      oscillator.frequency.exponentialRampToValueAtTime(710, t + 0.18);
-      oscillator.frequency.exponentialRampToValueAtTime(440, t + 0.36);
-      volume.gain.setValueAtTime(0.0001, t);
-      volume.gain.exponentialRampToValueAtTime(0.11, t + 0.045);
-      volume.gain.setValueAtTime(0.11, t + 0.27);
-      volume.gain.exponentialRampToValueAtTime(0.0001, t + 0.39);
-      oscillator.connect(volume); volume.connect(xrpContext.destination);
-      oscillator.start(t); oscillator.stop(t + 0.40);
-      oscillator.onended = () => { oscillator.disconnect(); volume.disconnect(); };
+    const attempt = ++soundAttempt;
+    // Play is invoked synchronously inside the Test sound tap, without waiting
+    // for an AudioContext.resume() state transition that may stall on iPhone.
+    try {
+      xrpPlayer.pause();
+      xrpPlayer.currentTime = 0;
+      xrpPlayer.muted = false;
+      xrpPlayer.volume = 0.85;
+      // Feature-detect Safari's optional Audio Session API. A media element
+      // already prefers the playback category, but this makes the intent clear.
+      try {
+        if (navigator.audioSession && 'type' in navigator.audioSession)
+          navigator.audioSession.type = 'playback';
+      } catch (_) {}
+      const playback = xrpPlayer.play();
+      xrpSoundStatus('Audio requested. If silent, increase Media volume and check your iPhone sound output.');
+      if (playback && typeof playback.then === 'function') {
+        Promise.resolve(playback).then(() => {
+          if (attempt !== soundAttempt) return;
+          if (document.hidden || Date.now() - now > 6000) {
+            xrpPlayer.pause();
+            return;
+          }
+          xrpSoundStatus(force
+            ? 'Test sound started. If inaudible, check Media volume, Silent Mode and Bluetooth output.'
+            : 'XRP alert sound started in this open page.');
+        }).catch(() => {
+          if (attempt !== soundAttempt) return;
+          xrpSoundStatus('iPhone blocked automatic audio. Open Crypto-Watch and tap Test sound once; the locked-screen push notification remains available.');
+        });
+      }
+      return true;
+    } catch (_) {
+      xrpSoundStatus('iPhone audio is unavailable. Check Media volume and try Test sound again with Crypto-Watch open.');
+      return false;
     }
-    xrpSoundStatus('Automatic XRP alert sound played in this open page.');
-    return true;
   }
   function refreshXrpSoundUi() {
     const mute = $('wa-xrp-mute');
     if (mute) mute.textContent = xrpMuted ? 'Unmute XRP sound' : 'Mute XRP sound';
-    xrpSoundStatus(xrpMuted ? 'XRP sound muted on this device.' : 'XRP sound is enabled. It plays on qualifying alerts when the browser permits audio.');
+    xrpSoundStatus(xrpMuted ? 'Automatic XRP sound is muted on this device.' :
+      'The built-in XRP sound is enabled. Tap Test sound to verify your iPhone speaker.');
   }
   $('wa-xrp-preview')?.addEventListener('click', () => {
-    unlockXrpAudio();
-    if (!playXrpSound(true)) xrpSoundStatus('This browser did not allow audio. Try Preview after another tap.');
+    // This is a direct, single-tap audio start - no sound selection or arming.
+    playXrpSound(true);
   });
   $('wa-xrp-mute')?.addEventListener('click', () => {
     xrpMuted = !xrpMuted;
+    if (xrpMuted) { soundAttempt++; xrpPlayer?.pause(); }
     try { localStorage.setItem(SOUND_SETTING, xrpMuted ? '1' : '0'); } catch (_) {}
     refreshXrpSoundUi();
   });
+  xrpPlayer?.addEventListener('error', () => {
+    xrpSoundStatus('Could not load the built-in XRP sound. Check connectivity and reload the page.');
+  });
+  window.addEventListener('pagehide', () => { soundAttempt++; xrpPlayer?.pause(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { soundAttempt++; xrpPlayer?.pause(); }
+  });
   refreshXrpSoundUi();
-  window.addEventListener('pagehide', () => { if (xrpContext) void xrpContext.suspend().catch(() => {}); });
 
   function receivePageAlert(event) {
     // A message from another page or another repository's worker is not an alert.
