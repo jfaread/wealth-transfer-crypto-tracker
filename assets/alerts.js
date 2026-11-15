@@ -154,7 +154,7 @@
     }
     const now = Date.now();
     if (!force && now - lastXrpSound < 10000) return false;
-    lastXrpSound = now;
+    if (!force) lastXrpSound = now;
     const attempt = ++soundAttempt;
     // Play is invoked synchronously inside the Test sound tap, without waiting
     // for an AudioContext.resume() state transition that may stall on iPhone.
