@@ -20,3 +20,11 @@ test('health uses provider observation times, never a newly written cache time',
  const s=good(),quotes={checkedAt:now,quotes:{bitcoin:{usd:1,last_updated_at:(now-1800001)/1000},'shiba-inu':{usd:0.000004,last_updated_at:Math.floor(now/1000)}}};
  const h=feedHealth(s,quotes,now);assert.equal(h.coins.BTC.quoteAvailable,false);assert.equal(h.coins.SHIB.quoteAvailable,true);assert.equal(h.status,'degraded');assert.equal(h.coins.BTC.historyObservedAt,s.ranges['1D'].data[0][1].points.at(-1).t);
 });
+
+
+test('each prepared chart carries the timestamp of its last genuine history observation',()=>{
+ const snapshot=good();for(const [range,b]of Object.entries(snapshot.ranges))for(const [id,data]of b.data){
+  assert.equal(data.historyObservedAt,data.points.at(-1).t,id+' '+range);
+  assert(Number.isSafeInteger(data.historySavedAt));
+ }
+});

@@ -152,3 +152,18 @@ test('a successful check keeping newer XRP remains neutral after timezone change
   context.show(bundle);assert.equal(statuses.at(-1).type,'ready');assert.match(statuses.at(-1).text,/^Prices checked/);assert.equal(warning.hidden,true);
   zone='Eastern Time';context.show(JSON.parse(JSON.stringify(bundle)));assert.match(statuses.at(-1).text,/^Prices checked.*Eastern Time/);assert.equal(warning.hidden,true);
 });
+
+
+test('history warning respects daily versus hourly observation cadence, not file-save time',()=>{
+ const statuses=[],warning={},state={coins:['BTC']};
+ const context=vm.createContext({Date:Clock,Map,state,$:()=>warning,setStatus:(type,message)=>statuses.push({type,message}),dateText:t=>String(t),zoneLabel:()=> 'UK'});
+ vm.runInContext(part('function showSnapshotStatus','async function repairChartHistory')+'\nglobalThis.show=showSnapshotStatus;',context);
+ const b={spec:{step:86400000,quoteCheckedAt:now,historySavedAt:now-3*HOUR},data:[['BTC',{historySavedAt:now-3*HOUR,historyObservedAt:now-4*HOUR,points:[{t:now-4*HOUR},{t:now-60000}]}]]};
+ context.show(b);assert.equal(warning.hidden,true,'Four-hour-old daily observations are not delayed');
+ b.data[0][1].historySavedAt=now;b.data[0][1].historyObservedAt=now-37*HOUR;
+ context.show(b);assert.equal(warning.hidden,false,'Saving a stale history file does not make its observations fresh');assert.match(warning.textContent,/BTC/);
+ b.spec.step=HOUR;b.data[0][1].historyObservedAt=now-3*HOUR;
+ context.show(b);assert.equal(warning.hidden,false,'Hourly history older than two hours is delayed');
+ b.data[0][1].historyObservedAt=now-HOUR;
+ context.show(b);assert.equal(warning.hidden,true,'Recent genuine hourly observations clear the warning');
+});
