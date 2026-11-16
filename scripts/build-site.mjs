@@ -41,7 +41,7 @@ export function buildSnapshot(items,manifest,now=Date.now()){
   for(const id of COIN_IDS){const a=items[id].prices[step===HOUR?'31':'365'];const first=a.find(p=>p[0]>=start),last=a.filter(p=>p[0]<=end).at(-1);if(!first||first[0]-start>step||!last||end-last[0]>step)continue;
    const base=first[1],points=[{t:start,p:base,r:0}];if(first[0]>start)points.push({t:first[0],p:base,r:0});let gaps=0;
    for(const [t,p] of a){if(t<=first[0]||t>end)continue;const gapBefore=t-points.at(-1).t>step*1.5;if(gapBefore)gaps++;points.push({t,p,r:(p/base-1)*100,...(gapBefore?{gapBefore:true}:{})});}
-   data.push([id,{id,base,points,gaps,asOf:manifest.updatedAt,historySavedAt:items[id].windowUpdatedAt?.[step===HOUR?31:365]??items[id].updatedAt}]);
+   data.push([id,{id,base,points,gaps,asOf:manifest.updatedAt,historyObservedAt:last[0],historySavedAt:items[id].windowUpdatedAt?.[step===HOUR?31:365]??items[id].updatedAt}]);
   }
   ranges[range]={spec,data,savedAt:historyCheckedAt};
  }
