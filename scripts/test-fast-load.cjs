@@ -58,7 +58,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
   // Age the observations as well as the write time, independently of the
   // latest scheduled data publication used to build the test site.
   const shift=aged-b.spec.end;b.savedAt=aged;b.spec.start+=shift;b.spec.end=aged;b.spec.historySavedAt=aged;
-  for(const [,d]of b.data){d.historySavedAt=aged;for(const point of d.points)point.t+=shift;}
+  for(const [,d]of b.data){d.historySavedAt=aged;for(const point of d.points)point.t+=shift;if(Number.isSafeInteger(d.historyObservedAt))d.historyObservedAt+=shift;}
  }
  const oldHtml=html.replace(/(<script id="wtct-bootstrap" type="application\/json">)([\s\S]*?)(<\/script>)/,(_,a,payload,b)=>{const j=JSON.parse(payload);for(const range of Object.keys(j.ranges))j.ranges[range]=oldSnapshots.ranges[range];return a+JSON.stringify(j)+b;});
  const cg={BTC:'bitcoin',ETH:'ethereum',BNB:'binancecoin',XRP:'ripple',SOL:'solana',SHIB:'shiba-inu',KISHU:'kishu-inu',WKC:'wiki-cat',CREPE:'crepe-2'};
@@ -134,6 +134,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  recent.savedAt=recentNow-60000;recent.spec.quoteCheckedAt=recentNow-60000;recent.spec.start+=recentShift;recent.spec.end=observedAt;
  for(const [,d]of recent.data){
   for(const point of d.points)point.t+=recentShift;
+  if(Number.isSafeInteger(d.historyObservedAt))d.historyObservedAt+=recentShift;
   const last=d.points.at(-1);if(last.t<observedAt){const gapBefore=observedAt-last.t>recent.spec.step*1.5;d.points.push({t:observedAt,p:last.p,r:last.r,...(gapBefore?{gapBefore:true}:{})});if(gapBefore)d.gaps++;}
  }
  // A successful but slightly older remote reply must not show an outage.
@@ -214,6 +215,7 @@ const CHART_COINS=['BTC','ETH','BNB','XRP','SOL','SHIB','KISHU','WKC','CREPE'];
  stored.savedAt=cacheNow;stored.spec.quoteCheckedAt=cacheNow;stored.spec.start+=shift;stored.spec.end=cacheNow;
  for(const [id,d]of stored.data){
   for(const point of d.points)point.t+=shift;
+  if(Number.isSafeInteger(d.historyObservedAt))d.historyObservedAt+=shift;
   // Provider series can end at different times. Pin the intended fixture age
   // independently of the prepared snapshot's newest series.
   const last=d.points.at(-1),target=id==='BTC'?staleAt:cacheNow;
