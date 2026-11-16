@@ -335,7 +335,7 @@ function showSnapshotStatus(bundle){
    return !Number.isSafeInteger(observedAt)||observedAt>now+300000||now-observedAt>cadence;
   });
   const old=delayed.length>0;$('warning').hidden=!old;
-  $('warning').textContent=old?'Current quotes updated. Historical observations are delayed for '+delayed.join(', ')+'. The saved verified chart is retained; Refresh prices retries due histories, and genuine missing intervals remain gaps.':'';return;
+  $('warning').textContent=old?'Current quotes updated. Chart history is delayed for '+delayed.join(', ')+'. The saved verified chart is retained; Refresh prices retries due histories, and genuine missing intervals remain gaps.':'';return;
  }
  const visible=new Map(bundle.data),observations=state.coins.map(id=>visible.get(id)?.points.at(-1)?.t);
  const oldestObservation=observations.every(Number.isSafeInteger)?Math.min(...observations):0;
